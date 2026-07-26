@@ -1299,8 +1299,8 @@ pub(crate) fn build_token_source(cfg: &Config) -> Result<Arc<dyn TokenSource>, A
 
 /// Build the request body for `Llm::summarize` on `Provider::OpenRouter`.
 /// Extracted so tests can assert on the actual wire shape instead of a
-/// hand-rolled literal — summaries never carry `reasoning` or `provider`
-/// (see `apply_openrouter_mutations`, which the summary path never calls).
+/// hand-rolled literal — summaries never carry `reasoning` (see
+/// `apply_openrouter_mutations`, which the summary path never calls).
 /// It spells the token limit `max_tokens` directly for the same reason: the
 /// mutation that renames it is never applied here.
 fn openrouter_summary_body(
@@ -1385,6 +1385,18 @@ fn classify_openrouter_error(
     }
 }
 
+/// The one place the parameter-routing failure is worded. OpenRouter reports it
+/// two ways — a 404 `No endpoints found ...` (what a `require_parameters`-style
+/// or unsupported-parameter body actually returns) and an untyped 503 — and both
+/// mean the same thing to the user: the model id is fine, the request shape is
+/// not serveable by any endpoint behind it.
+fn openrouter_parameter_routing_error(error_body: &str) -> AgentError {
+    AgentError::Llm(format!(
+        "no OpenRouter endpoint supports the requested parameters — \
+         check model, effort, and tool requirements: {error_body}"
+    ))
+}
+
 async fn openrouter_post(
     http: &Client,
     url: &str,
@@ -1442,9 +1454,18 @@ async fn openrouter_post(
             ));
         }
         if status == 404 {
+            // OpenRouter overloads 404: a genuinely unknown/unavailable model id
+            // and a valid model whose parameter set no endpoint can serve both
+            // land here. Discriminate on the full parameter-routing phrase rather
+            // than a prefix — "No endpoints found for <model>"-style bodies are
+            // about the model, and reporting a parameter problem as
+            // `LlmModelNotFound` (or vice versa) sends the user to the wrong fix.
+            let error_body = read_error_body(resp).await;
+            if error_body.contains("No endpoints found that can handle the requested parameters") {
+                return Err(openrouter_parameter_routing_error(&error_body));
+            }
             return Err(AgentError::LlmModelNotFound(format!(
-                "{status}: {}",
-                read_error_body(resp).await
+                "{status}: {error_body}"
             )));
         }
         // A6: status+error_type retry matrix
@@ -1484,14 +1505,11 @@ async fn openrouter_post(
                     .and_then(|m| m.get("error_type"))
                     .and_then(Value::as_str)
                     .is_some();
-                if !has_error_type && status.as_u16() == 503 {
-                    Err(AgentError::Llm(format!(
-                        "no OpenRouter endpoint supports the requested parameters — \
-                         check model, effort, and tool requirements: {error_body}"
-                    )))
+                Err(if !has_error_type && status.as_u16() == 503 {
+                    openrouter_parameter_routing_error(&error_body)
                 } else {
-                    Err(AgentError::Llm(format!("{status}: {error_body}")))
-                }
+                    AgentError::Llm(format!("{status}: {error_body}"))
+                })
             };
         }
         if !status.is_success() {
@@ -1537,32 +1555,31 @@ fn apply_openrouter_mutations(
         // Remove the OpenAI-style reasoning_effort that openai_body may have set
         obj.remove("reasoning_effort");
 
-        // OpenRouter's catalog advertises `max_tokens`, not OpenAI's
-        // `max_completion_tokens` — and `require_parameters: true` below makes the
-        // router reject every endpoint lacking a parameter we send. Sending the
-        // OpenAI spelling 404s "No endpoints found that can handle the requested
-        // parameters" on the ~80% of tools-capable models that only advertise
-        // `max_tokens`.
+        // OpenRouter's Chat Completions API spells the output cap `max_tokens`;
+        // `max_completion_tokens` is OpenAI-native and only 53 of 274
+        // tools-capable OpenRouter models advertise it. Sending the OpenAI
+        // spelling risks the cap being dropped on the floor by the endpoint we
+        // route to, so translate it here rather than at the shared `openai_body`
+        // (which OpenAI and Databricks also use, where the OpenAI spelling is
+        // correct).
         if let Some(max_tokens) = obj.remove("max_completion_tokens") {
             obj.insert("max_tokens".into(), max_tokens);
         }
 
-        // A2/A3: Add OpenRouter reasoning object when effort is configured
+        // A2/A3: Add OpenRouter reasoning object when effort is configured.
+        // Deliberately NOT paired with `provider.require_parameters`: that filter
+        // routes only to endpoints advertising every parameter in the body, and
+        // 83 of 274 tools-capable models do not advertise `reasoning`, so it turns
+        // an opt-in effort setting into a hard 404 ("No endpoints found that can
+        // handle the requested parameters") on a model id that is perfectly
+        // valid. OpenRouter already best-effort routes on `tools`/`max_tokens`
+        // without the filter, so we accept a request served without reasoning
+        // over a request that cannot be served at all.
         if let Some(e) = effort {
             obj.insert(
                 "reasoning".into(),
                 json!({ "effort": e.openai_effort_str() }),
             );
-        }
-
-        // A3: require_parameters when body carries must-honor fields
-        let has_tools = obj
-            .get("tools")
-            .and_then(Value::as_array)
-            .is_some_and(|a| !a.is_empty());
-        let has_reasoning = obj.contains_key("reasoning");
-        if has_tools || has_reasoning {
-            obj.insert("provider".into(), json!({ "require_parameters": true }));
         }
 
         // A7: Anthropic cache_control injection for anthropic/* models
@@ -3347,7 +3364,11 @@ mod tests {
             body.get("reasoning_effort").is_none(),
             "OpenAI-style reasoning_effort must be removed"
         );
-        assert_eq!(body["provider"]["require_parameters"], true);
+        assert!(
+            body.get("provider").is_none(),
+            "provider.require_parameters hard-404s models that do not advertise \
+             every parameter we send"
+        );
         assert!(!body["tools"].as_array().unwrap().is_empty());
         assert_eq!(
             body["max_tokens"], 1024,
@@ -3355,7 +3376,7 @@ mod tests {
         );
         assert!(
             body.get("max_completion_tokens").is_none(),
-            "the OpenAI spelling 404s under require_parameters"
+            "max_completion_tokens is the OpenAI-native spelling; OpenRouter reads max_tokens"
         );
     }
 
@@ -3375,9 +3396,9 @@ mod tests {
             body.get("reasoning").is_none(),
             "reasoning must be absent when effort is None"
         );
-        assert_eq!(
-            body["provider"]["require_parameters"], true,
-            "require_parameters set because tools are non-empty"
+        assert!(
+            body.get("provider").is_none(),
+            "tools alone must not add a provider routing filter"
         );
     }
 
@@ -3395,9 +3416,10 @@ mod tests {
         );
         apply_openrouter_mutations(&mut body, c.thinking_effort, "anthropic/claude-opus-4-7");
         assert_eq!(body["reasoning"]["effort"], "medium");
-        assert_eq!(
-            body["provider"]["require_parameters"], true,
-            "require_parameters set because reasoning is present"
+        assert!(
+            body.get("provider").is_none(),
+            "83 of 274 tools-capable models do not advertise `reasoning`; filtering on \
+             it would 404 them instead of answering without reasoning"
         );
     }
 
@@ -3416,7 +3438,7 @@ mod tests {
         assert!(body.get("reasoning").is_none());
         assert!(
             body.get("provider").is_none(),
-            "provider object must be absent when neither tools nor reasoning"
+            "no body shape adds a provider routing filter"
         );
     }
 
@@ -4173,6 +4195,7 @@ mod tests {
             200 => "200 OK",
             402 => "402 Payment Required",
             403 => "403 Forbidden",
+            404 => "404 Not Found",
             429 => "429 Too Many Requests",
             500 => "500 Internal Server Error",
             502 => "502 Bad Gateway",
@@ -4334,6 +4357,61 @@ mod tests {
             attempts.load(std::sync::atomic::Ordering::SeqCst),
             1,
             "402 must not be retried"
+        );
+    }
+
+    /// A 404 whose body is OpenRouter's parameter-routing rejection is NOT a
+    /// missing model: the id is valid and no endpoint behind it can serve the
+    /// request shape. It must surface the actionable routing message rather than
+    /// `LlmModelNotFound`, which sends the user hunting a model-name typo.
+    /// Body text is the one OpenRouter actually returned in the live probe run.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn openrouter_post_404_no_endpoints_found_is_parameter_routing_error() {
+        let (url, _captured, attempts) = spawn_openrouter_stub(vec![CannedResponse::new(
+            404,
+            r#"{"error":{"message":"No endpoints found that can handle the requested parameters. To learn more about provider routing, visit: https://openrouter.ai/docs/guides/routing/provider-selection","code":404}}"#,
+        )])
+        .await;
+        let http = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let err = openrouter_post(&http, &format!("{url}/x"), &json!({}), "key")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, AgentError::Llm(s) if s.contains("no OpenRouter endpoint supports")),
+            "parameter-routing 404 must not be reported as a missing model: got {err:?}"
+        );
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "404 must not be retried"
+        );
+    }
+
+    /// Every other 404 still maps to `LlmModelNotFound`, including one that
+    /// shares the `No endpoints found` prefix but is about the model rather than
+    /// the parameters — the discriminator is narrow enough that a genuinely
+    /// unavailable model keeps its own error kind (Desktop renders
+    /// model-not-found differently from a generic LLM failure).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn openrouter_post_404_unknown_model_stays_model_not_found() {
+        let (url, _captured, _attempts) = spawn_openrouter_stub(vec![CannedResponse::new(
+            404,
+            r#"{"error":{"message":"No endpoints found for vendor/nonexistent-model.","code":404}}"#,
+        )])
+        .await;
+        let http = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let err = openrouter_post(&http, &format!("{url}/x"), &json!({}), "key")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, AgentError::LlmModelNotFound(s) if s.contains("404") && s.contains("vendor/nonexistent-model")),
+            "a model-level 404 must stay LlmModelNotFound: got {err:?}"
         );
     }
 
