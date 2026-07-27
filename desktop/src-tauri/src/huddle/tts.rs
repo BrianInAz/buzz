@@ -47,7 +47,7 @@ use std::{
     time::Duration,
 };
 
-use super::playback_speed::{PlaybackSpeedControl, PlaybackSpeedProcessor};
+use super::playback_speed::{process_complete_chunk, PlaybackSpeedControl};
 use super::pocket::{
     load_text_to_speech, load_voice_style, SynthesisOutcome, SAMPLE_RATE, VOICE_FILE_EXT,
 };
@@ -661,9 +661,7 @@ fn tts_worker(config: TtsWorkerConfig, text_rx: mpsc::Receiver<QueuedText>) {
                     let buf =
                         build_sentence_append_buffer(&mut first_append, audio, silence_buf_len);
                     let speed = playback_speed.get();
-                    let buf = match PlaybackSpeedProcessor::new(speed, SAMPLE_RATE)
-                        .and_then(|mut processor| processor.process_complete_chunk(&buf))
-                    {
+                    let buf = match process_complete_chunk(&buf, speed, SAMPLE_RATE) {
                         Ok(processed) => processed,
                         Err(error) => {
                             eprintln!(
