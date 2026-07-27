@@ -886,14 +886,14 @@ mod tests {
         // (multi-pod commit ordering), and the epoch column is what detects
         // token resets — both are load-bearing for the routing proof.
         //
-        // Version 26, not 25: version 25 was burned by
-        // `0025_users_agent_owner_lookup` (#2615), which shipped on main and
-        // was then reverted (#3168). Databases migrated during that window
-        // have version 25 recorded with those bytes; reusing the number with
-        // different content would fail their startup with VersionMismatch.
-        // 25 stays vacant as a tombstone (a re-land of #2615 must reuse the
-        // exact original bytes).
-        assert_eq!(migrations[24].version, 26);
+        // Version 25 is safe to use despite `0025_users_agent_owner_lookup`
+        // (#2615) briefly occupying it: that migration lived on main for
+        // ~1 hour before the revert (#3168), and no deployed image ever
+        // contained the file (prod rolled dd222a5 → sha-137185e, which
+        // already includes the revert). A dev database migrated from a
+        // build inside that window is broken on current main regardless
+        // (VersionMissing); the repair is deleting its stale version-25 row.
+        assert_eq!(migrations[24].version, 25);
         let heartbeat = migrations[24].sql.as_str();
         assert!(heartbeat.contains("CREATE TABLE replica_heartbeat"));
         assert!(heartbeat.contains("CHECK (id = 1)"));
