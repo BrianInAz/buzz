@@ -347,6 +347,7 @@ mod tests {
             "push_gateway_delivery_auth_replays",
             "push_gateway_delivery_request_replays",
             "product_feedback",
+            "replica_heartbeat",
         ] {
             if normalized[insert_pos..].contains(&format!("'{value}'")) {
                 globals.insert(value.to_owned());
@@ -560,7 +561,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 24);
+        assert_eq!(migrations.len(), 25);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -879,6 +880,26 @@ mod tests {
             .to_lowercase()
             .contains("for update"));
         assert!(ttl_shared.contains("NEW.kind <> 9007"));
+
+        // Replica heartbeat: the fence's portable read-side observation. A
+        // single CHECK'd row makes the token update the serialization point
+        // (multi-pod commit ordering), and the epoch column is what detects
+        // token resets — both are load-bearing for the routing proof.
+        //
+        // Version 26, not 25: version 25 was burned by
+        // `0025_users_agent_owner_lookup` (#2615), which shipped on main and
+        // was then reverted (#3168). Databases migrated during that window
+        // have version 25 recorded with those bytes; reusing the number with
+        // different content would fail their startup with VersionMismatch.
+        // 25 stays vacant as a tombstone (a re-land of #2615 must reuse the
+        // exact original bytes).
+        assert_eq!(migrations[24].version, 26);
+        let heartbeat = migrations[24].sql.as_str();
+        assert!(heartbeat.contains("CREATE TABLE replica_heartbeat"));
+        assert!(heartbeat.contains("CHECK (id = 1)"));
+        assert!(heartbeat.contains("epoch"));
+        assert!(heartbeat.contains("INSERT INTO replica_heartbeat (id) VALUES (1)"));
+        assert!(heartbeat.contains("_operator_global_tables"));
     }
 
     #[test]
