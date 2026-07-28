@@ -184,9 +184,95 @@ pub struct Db {
     /// Freshness fence gating cursor-page routing to the replica.
     ///
     /// Starts closed; a background probe ([`replica_fence::run_probe`])
-    /// advances it after each verified writer→replica LSN handshake. When
-    /// closed or stale, every cursor page routes to the writer.
+    /// commits heartbeat tokens and retains proof entries. Routing proves
+    /// coverage per request on the serving reader session; when the ring is
+    /// empty or stale, every routed read stays on the writer.
     pub(crate) fence: std::sync::Arc<replica_fence::ReplicaFence>,
+    /// Head-fetch routing budget (Predicate A): a head page may be served
+    /// from a proved replica session only when the proved heartbeat entry is
+    /// at most this old. `None` disables head routing entirely (the rollout
+    /// default) — bounded-stale head semantics are a product decision, not
+    /// an invariant, so the gate ships off.
+    pub(crate) replica_head_max_age: Option<Duration>,
+}
+
+/// The session that served (or will serve) a routed read, so follow-up
+/// queries in the same request (the channel-window aux closure) run on the
+/// **same proved connection** — a different pooled reader session may sit at
+/// a different replay position, so hopping sessions would discard the proof.
+///
+/// `Writer` carries the writer pool: follow-ups there are authoritative by
+/// construction and need no session pinning.
+pub struct ReadSession {
+    inner: ReadSessionInner,
+}
+
+enum ReadSessionInner {
+    /// A replica session whose heartbeat observation proved fence coverage.
+    Replica(sqlx::pool::PoolConnection<sqlx::Postgres>),
+    /// The writer pool (cheap clone; Arc-backed).
+    Writer(PgPool),
+}
+
+impl ReadSession {
+    /// Query events on this session (see [`Db::query_events`]).
+    pub async fn query_events(&mut self, q: &EventQuery) -> Result<Vec<StoredEvent>> {
+        match &mut self.inner {
+            ReadSessionInner::Replica(conn) => event::query_events_on(conn, q).await,
+            ReadSessionInner::Writer(pool) => event::query_events(pool, q).await,
+        }
+    }
+
+    /// Whether this session is a proved replica connection (observability).
+    pub fn is_replica(&self) -> bool {
+        matches!(self.inner, ReadSessionInner::Replica(_))
+    }
+}
+
+/// Where one routed read is served (see [`Db::route_read`]).
+enum RouteDecision {
+    /// A reader session that proved this fence entry — the page runs here.
+    Replica(
+        sqlx::pool::PoolConnection<sqlx::Postgres>,
+        replica_fence::TokenEntry,
+    ),
+    /// Fail closed: serve from the writer pool.
+    Writer,
+}
+
+/// The predicate one routed read must satisfy (see [`Db::route_read`]).
+enum RoutePredicate {
+    /// Predicate A — head fetch, bounded staleness: the proved entry must
+    /// be within the configured head budget (default off).
+    Head,
+    /// Predicate B — cursor page, completeness: the proved wall must cover
+    /// the cursor timestamp. `None` means the caller could not derive an
+    /// upper bound from its cursor (forward-walking thread pages) and
+    /// post-verifies the served rows against the proved wall itself.
+    Cursor(Option<DateTime<Utc>>),
+}
+
+impl RoutePredicate {
+    /// A channel-window request: cursor pages are bounded above by the
+    /// cursor timestamp (Predicate B); a head fetch is Predicate A.
+    fn from_channel_cursor(cursor: &Option<(DateTime<Utc>, Vec<u8>)>) -> Self {
+        match cursor {
+            Some((ts, _)) => RoutePredicate::Cursor(Some(*ts)),
+            None => RoutePredicate::Head,
+        }
+    }
+}
+
+/// Map the configured head budget (`BUZZ_REPLICA_HEAD_MAX_AGE_SECS`) to the
+/// runtime gate: `0` disables head routing; anything above the fence
+/// staleness gate is clamped to it (an entry older than the staleness gate
+/// never routes anyway, so a larger budget would only misrepresent the
+/// config).
+fn head_budget_from_secs(secs: u64) -> Option<Duration> {
+    match secs {
+        0 => None,
+        secs => Some(Duration::from_secs(secs).min(replica_fence::FENCE_STALENESS)),
+    }
 }
 
 /// Snapshot of Postgres connection pool utilisation.
@@ -240,6 +326,12 @@ pub struct DbConfig {
     pub max_lifetime_secs: u64,
     /// Seconds a connection may sit idle before being closed.
     pub idle_timeout_secs: u64,
+    /// Head-fetch replica budget `B` in seconds (Predicate A, env
+    /// `BUZZ_REPLICA_HEAD_MAX_AGE_SECS`). `0` disables head routing — the
+    /// rollout default. Values above [`replica_fence::FENCE_STALENESS`] are
+    /// clamped to it: an entry older than the staleness gate never routes
+    /// anyway, so a larger budget would only misrepresent the config.
+    pub replica_head_max_age_secs: u64,
 }
 
 impl Default for DbConfig {
@@ -255,6 +347,7 @@ impl Default for DbConfig {
             acquire_timeout_secs: 3,
             max_lifetime_secs: 1800,
             idle_timeout_secs: 600,
+            replica_head_max_age_secs: 0,
         }
     }
 }
@@ -365,11 +458,13 @@ impl Db {
             Some(url) => Some(Self::connect_pool(config, url, false).await?),
             None => None,
         };
+        let replica_head_max_age = head_budget_from_secs(config.replica_head_max_age_secs);
         Ok(Self {
             pool,
             max_connections: config.max_connections,
             read_pool,
             fence: std::sync::Arc::new(replica_fence::ReplicaFence::new()),
+            replica_head_max_age,
         })
     }
 
@@ -408,6 +503,7 @@ impl Db {
             pool,
             read_pool: None,
             fence: std::sync::Arc::new(replica_fence::ReplicaFence::new()),
+            replica_head_max_age: None,
         }
     }
 
@@ -424,7 +520,14 @@ impl Db {
             pool,
             read_pool: Some(read_pool),
             fence: std::sync::Arc::new(replica_fence::ReplicaFence::new()),
+            replica_head_max_age: None,
         }
+    }
+
+    /// Test hook: set the head-fetch routing budget (Predicate A), which
+    /// [`Db::from_pools`] leaves disabled.
+    pub fn set_replica_head_max_age_for_tests(&mut self, budget: Option<Duration>) {
+        self.replica_head_max_age = budget;
     }
 
     /// The freshness fence gating replica routing (see [`replica_fence`]).
@@ -438,7 +541,7 @@ impl Db {
     /// Ordering matters (Perci, PR #2084 review): this must run **after**
     /// the migration decision. On a relay with `BUZZ_AUTO_MIGRATE` off, the
     /// writer pool arms the GUC regardless, but if migration 0021 has not
-    /// been applied there is no trigger enforcing it — and an LSN probe
+    /// been applied there is no trigger enforcing it — and a heartbeat probe
     /// would open the fence over an unenforced floor. So the probe is gated
     /// on an unconditional two-part verification against the live schema:
     /// catalog shape ([`replica_fence::verify_floor_guard_catalog`]) and
@@ -449,14 +552,13 @@ impl Db {
     /// stays closed: every cursor page routes to the writer. The relay keeps
     /// serving — degraded capacity, never holes.
     pub async fn spawn_fence_probe(&self) -> Result<bool> {
-        let Some(read_pool) = &self.read_pool else {
+        if self.read_pool.is_none() {
             return Ok(false);
-        };
+        }
         replica_fence::verify_floor_guard_catalog(&self.pool).await?;
         replica_fence::verify_floor_guard_behavior(&self.pool).await?;
         tokio::spawn(replica_fence::run_probe(
             self.pool.clone(),
-            read_pool.clone(),
             std::sync::Arc::clone(&self.fence),
         ));
         Ok(true)
@@ -476,6 +578,69 @@ impl Db {
     /// Whether a distinct read-replica pool is configured.
     pub fn has_read_pool(&self) -> bool {
         self.read_pool.is_some()
+    }
+
+    /// Acquire a reader session and complete the connection-local half of
+    /// the fence proof: observe the heartbeat token/epoch **on that exact
+    /// session** and resolve it against the retained ring. Returns the
+    /// proved session together with the strongest [`replica_fence::TokenEntry`]
+    /// its observation supports, or the fail-closed reason for route
+    /// metrics.
+    ///
+    /// Everything but `Ok` fails closed — acquire failure, missing
+    /// heartbeat row (migration not yet replayed there), observation error,
+    /// epoch mismatch, or a token below every retained entry all route the
+    /// request to the writer.
+    async fn proved_reader(
+        &self,
+        read_pool: &PgPool,
+    ) -> std::result::Result<
+        (
+            sqlx::pool::PoolConnection<sqlx::Postgres>,
+            replica_fence::TokenEntry,
+        ),
+        &'static str,
+    > {
+        let mut conn = match read_pool.acquire().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                tracing::warn!(error = %e, "reader acquire failed; routing to writer");
+                return Err("reader_validation_error");
+            }
+        };
+        let obs = match replica_fence::observe_heartbeat(&mut conn).await {
+            Ok(Some(observation)) => observation,
+            Ok(None) => return Err("reader_validation_error"),
+            Err(e) => {
+                tracing::warn!(error = %e, "heartbeat observation failed; routing to writer");
+                return Err("reader_validation_error");
+            }
+        };
+        match self.fence.resolve(obs.token, obs.epoch) {
+            replica_fence::ResolveOutcome::Proved(entry) => {
+                tracing::debug!(
+                    token = obs.token,
+                    proved_token = entry.token,
+                    backend = %obs.backend,
+                    "reader session proved fence coverage"
+                );
+                Ok((conn, entry))
+            }
+            replica_fence::ResolveOutcome::EpochMismatch => Err("reader_validation_error"),
+            replica_fence::ResolveOutcome::TokenBehind => Err("reader_token_behind"),
+        }
+    }
+
+    /// Record one route decision (Rev 2 observability): which path, where it
+    /// went, and why.
+    fn record_route(path: &'static str, decision: &'static str, reason: &'static str) {
+        metrics::counter!(
+            "buzz_db_route_decision",
+            "path" => path,
+            "decision" => decision,
+            "reason" => reason,
+        )
+        .increment(1);
     }
 
     /// Run pending database migrations.
@@ -1990,19 +2155,25 @@ impl Db {
 
     /// Fetch replies under a root event.
     ///
-    /// Routing: the head fetch (`cursor: None`) always reads the writer.
-    /// Cursor-bearing pages may read the replica pool when one is configured
-    /// AND the freshness fence is open ([`replica_fence`]). Thread pagination
-    /// walks forward from oldest to newest, so a replica page is served only
-    /// when it is provably complete:
+    /// Routing mirrors [`Db::get_channel_window_with_session`]: a head
+    /// fetch (`cursor: None`) is Predicate A (bounded staleness, gated by
+    /// the default-off head budget); cursor pages are Predicate B
+    /// (completeness). Thread pagination walks **forward** from oldest to
+    /// newest, so a cursor carries no upper bound — instead the served page
+    /// is post-verified against the wall the serving session proved:
     ///
     /// - an under-`limit` page is a candidate terminal page — the client
     ///   treats it as EOF, so it is re-run on the writer to keep the EOF
     ///   decision authoritative (a lagged replica could truncate the tail);
-    /// - a full page whose newest row exceeds the fence could straddle a row
-    ///   the replica has not replayed (commit order is not `created_at`
-    ///   order), so it is also re-run on the writer. Only a full page that
-    ///   sits entirely at or below the fence is served from the replica.
+    /// - a full page whose newest row exceeds the proved fence wall could
+    ///   straddle a row the session has not replayed (commit order is not
+    ///   `created_at` order), so it is also re-run on the writer. Only a
+    ///   full page that sits entirely at or below the proved wall is served
+    ///   from the replica.
+    ///
+    /// A head fetch routed under Predicate A skips the re-run: bounded
+    /// staleness (missing at most the freshest budget-window of replies) is
+    /// exactly the semantic the head gate accepts.
     pub async fn get_thread_replies(
         &self,
         community_id: CommunityId,
@@ -2011,9 +2182,13 @@ impl Db {
         limit: u32,
         cursor: Option<&[u8]>,
     ) -> Result<Vec<thread::ThreadReply>> {
-        if cursor.is_some() && self.has_read_pool() && self.fence.verified_through().is_some() {
-            let replies = thread::get_thread_replies(
-                self.read(),
+        let (path, predicate): (&'static str, RoutePredicate) = match cursor {
+            Some(_) => ("thread_cursor", RoutePredicate::Cursor(None)),
+            None => ("thread_head", RoutePredicate::Head),
+        };
+        if let RouteDecision::Replica(mut conn, entry) = self.route_read(path, predicate).await {
+            let replies = thread::get_thread_replies_on(
+                &mut conn,
                 community_id,
                 root_event_id,
                 depth_limit,
@@ -2021,15 +2196,20 @@ impl Db {
                 cursor,
             )
             .await?;
+            if cursor.is_none() {
+                // Predicate A: bounded-stale head page, served as proved.
+                return Ok(replies);
+            }
             let full = replies.len() >= limit as usize;
             let below_fence = replies
                 .last()
-                .is_some_and(|tail| self.fence.covers(tail.created_at));
+                .is_some_and(|tail| tail.created_at <= entry.fence_wall);
             if full && below_fence {
                 return Ok(replies);
             }
-            // Candidate terminal page, or page reaching above the fence —
-            // verify against the writer.
+            // Candidate terminal page, or page reaching above the proved
+            // wall — verify against the writer.
+            Self::record_route("thread_eof", "writer", "stale");
         }
         thread::get_thread_replies(
             &self.pool,
@@ -2053,15 +2233,8 @@ impl Db {
 
     /// One channel window: top-level rows + summaries + server `has_more`.
     ///
-    /// Routing: the head fetch (`cursor: None`) always reads the writer — it
-    /// must include just-committed events. A cursor-bearing page scrolls
-    /// *backward* into history bounded above by the cursor timestamp
-    /// (`created_at < ts`, or `= ts` with the id tiebreak), so it may read
-    /// the replica when one is configured AND the freshness fence covers the
-    /// cursor timestamp: every row the page could contain is then provably
-    /// replayed on the replica ([`replica_fence`]). Pages whose cursor
-    /// reaches above the fence — the freshest sliver of history — stay on
-    /// the writer.
+    /// Convenience wrapper over [`Db::get_channel_window_with_session`] for
+    /// callers with no follow-up queries; the serving session is released.
     pub async fn get_channel_window(
         &self,
         community_id: CommunityId,
@@ -2070,11 +2243,153 @@ impl Db {
         cursor: Option<(DateTime<Utc>, Vec<u8>)>,
         kind_filter: Option<&[u32]>,
     ) -> Result<thread::ChannelWindow> {
-        let pool = match &cursor {
-            Some((ts, _)) if self.has_read_pool() && self.fence.covers(*ts) => self.read(),
-            _ => &self.pool,
+        self.get_channel_window_with_session(community_id, channel_id, limit, cursor, kind_filter)
+            .await
+            .map(|(window, _session)| window)
+    }
+
+    /// [`Db::get_channel_window`], additionally returning the session that
+    /// served the page so request-scoped follow-ups (the aux closure) run on
+    /// the same proved connection.
+    ///
+    /// Routing:
+    ///
+    /// - **Cursor page** (Predicate B — completeness): scrolls *backward*
+    ///   into history bounded above by the cursor timestamp (`created_at <
+    ///   ts`, or `= ts` with the id tiebreak), so it may be served by a
+    ///   replica session when one is configured AND that session **proves**
+    ///   coverage of the cursor timestamp: the heartbeat token/epoch is
+    ///   observed on the exact connection that will serve the page and
+    ///   resolved against the fence's retained ring ([`replica_fence`]).
+    /// - **Head fetch** (Predicate A — bounded staleness): served by a
+    ///   proved replica session only when the head gate is configured
+    ///   ([`DbConfig::replica_head_max_age_secs`], default off) and the
+    ///   proved entry is within the budget. This trades a bounded staleness
+    ///   window (budget plus probe cadence) on the GET leg for writer
+    ///   offload; the WS `since`-overlap union covers fresh events.
+    ///
+    /// Every failure fails closed to the writer and is recorded in
+    /// `buzz_db_route_decision`.
+    pub async fn get_channel_window_with_session(
+        &self,
+        community_id: CommunityId,
+        channel_id: Uuid,
+        limit: u32,
+        cursor: Option<(DateTime<Utc>, Vec<u8>)>,
+        kind_filter: Option<&[u32]>,
+    ) -> Result<(thread::ChannelWindow, ReadSession)> {
+        let path: &'static str = if cursor.is_some() {
+            "channel_cursor"
+        } else {
+            "channel_head"
         };
-        thread::get_channel_window(pool, community_id, channel_id, limit, cursor, kind_filter).await
+        match self
+            .route_read(path, RoutePredicate::from_channel_cursor(&cursor))
+            .await
+        {
+            RouteDecision::Replica(mut conn, _entry) => {
+                let window = thread::get_channel_window_on(
+                    &mut conn,
+                    community_id,
+                    channel_id,
+                    limit,
+                    cursor,
+                    kind_filter,
+                )
+                .await?;
+                Ok((
+                    window,
+                    ReadSession {
+                        inner: ReadSessionInner::Replica(conn),
+                    },
+                ))
+            }
+            RouteDecision::Writer => {
+                let window = thread::get_channel_window(
+                    &self.pool,
+                    community_id,
+                    channel_id,
+                    limit,
+                    cursor,
+                    kind_filter,
+                )
+                .await?;
+                Ok((
+                    window,
+                    ReadSession {
+                        inner: ReadSessionInner::Writer(self.pool.clone()),
+                    },
+                ))
+            }
+        }
+    }
+
+    /// Shared route decision for one read: evaluate the predicate against a
+    /// proved reader session and record the decision. Fail closed to the
+    /// writer everywhere.
+    async fn route_read(&self, path: &'static str, predicate: RoutePredicate) -> RouteDecision {
+        let Some(read_pool) = &self.read_pool else {
+            Self::record_route(path, "writer", "disabled");
+            return RouteDecision::Writer;
+        };
+        // Cheap prechecks on the shared ring before spending a reader
+        // checkout; the connection-local observation still has to prove it.
+        let Some(newest) = self.fence.newest() else {
+            Self::record_route(path, "writer", "uninitialized");
+            return RouteDecision::Writer;
+        };
+        match &predicate {
+            // Predicate B precheck: the newest wall must cover the cursor
+            // (when the caller has an upper bound at all).
+            RoutePredicate::Cursor(Some(ts)) => {
+                if *ts > newest.fence_wall {
+                    Self::record_route(path, "writer", "stale");
+                    return RouteDecision::Writer;
+                }
+            }
+            RoutePredicate::Cursor(None) => {}
+            // Predicate A precheck: head routing must be enabled, and the
+            // newest entry within budget (else no proved entry can be).
+            RoutePredicate::Head => match self.replica_head_max_age {
+                Some(budget) if newest.committed_at.elapsed() <= budget => {}
+                Some(_) => {
+                    Self::record_route(path, "writer", "stale");
+                    return RouteDecision::Writer;
+                }
+                None => {
+                    Self::record_route(path, "writer", "disabled");
+                    return RouteDecision::Writer;
+                }
+            },
+        }
+        match self.proved_reader(read_pool).await {
+            Ok((conn, entry)) => {
+                let (holds, reason): (bool, &'static str) = match &predicate {
+                    RoutePredicate::Cursor(Some(ts)) => (*ts <= entry.fence_wall, "covered"),
+                    // No upper bound: the caller post-verifies the served
+                    // rows against the proved wall.
+                    RoutePredicate::Cursor(None) => (true, "covered"),
+                    RoutePredicate::Head => (
+                        self.replica_head_max_age
+                            .is_some_and(|budget| entry.committed_at.elapsed() <= budget),
+                        "fresh",
+                    ),
+                };
+                if holds {
+                    Self::record_route(path, "replica", reason);
+                    RouteDecision::Replica(conn, entry)
+                } else {
+                    // The session proves an older entry than the predicate
+                    // needs (replication lag) — fail closed.
+                    Self::record_route(path, "writer", "stale");
+                    RouteDecision::Writer
+                }
+            }
+            Err(reason) => {
+                Self::record_route(path, "writer", reason);
+                RouteDecision::Writer
+            }
+        }
     }
 
     /// Look up a single thread_metadata row by event_id.
@@ -5436,6 +5751,20 @@ mod tests {
         assert!(db.read_pool_stats().is_none());
     }
 
+    #[test]
+    fn head_budget_zero_disables_and_large_values_clamp_to_staleness() {
+        assert_eq!(head_budget_from_secs(0), None, "0 = head routing off");
+        assert_eq!(
+            head_budget_from_secs(5),
+            Some(std::time::Duration::from_secs(5))
+        );
+        assert_eq!(
+            head_budget_from_secs(10_000),
+            Some(replica_fence::FENCE_STALENESS),
+            "budgets above the staleness gate clamp to it"
+        );
+    }
+
     /// Channel window: head fetch (no cursor) reads the WRITER; cursor pages
     /// read the REPLICA. Divergent fixtures prove which pool served each.
     #[tokio::test]
@@ -5513,6 +5842,90 @@ mod tests {
                 "m1".to_string()
             ],
             "cursor page must be served by the replica"
+        );
+
+        drop_scratch_db(&admin, replica, &rname).await;
+        drop_scratch_db(&admin, writer, &wname).await;
+    }
+
+    /// Head gate (Predicate A): with the budget unset, a head fetch reads
+    /// the writer even over an open fence; with a budget set and a fresh
+    /// proved entry, the head page is served by the replica session
+    /// (bounded staleness accepted); with a budget the fence entry exceeds,
+    /// the head page falls back to the writer.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn head_fetch_routes_by_configured_budget() {
+        let admin = PgPool::connect(&admin_url().await)
+            .await
+            .expect("connect admin");
+        let (writer, wname) = create_scratch_db(&admin, "head_w").await;
+        let (replica, rname) = create_scratch_db(&admin, "head_r").await;
+
+        let author = nostr::Keys::generate();
+        let community = Uuid::new_v4();
+        let channel = Uuid::new_v4();
+        seed_community_channel(&writer, community, channel, &author).await;
+        seed_community_channel(&replica, community, channel, &author).await;
+
+        let base = 1_700_000_000u64;
+        let shared = signed_event_at(&author, "shared", base);
+        for pool in [&writer, &replica] {
+            insert_top_level(pool, community, channel, &shared).await;
+        }
+        // Divergent heads prove which pool served the fetch.
+        let fresh = signed_event_at(&author, "fresh-writer-only", base + 30);
+        insert_top_level(&writer, community, channel, &fresh).await;
+        let marker = signed_event_at(&author, "replica-only-marker", base + 20);
+        insert_top_level(&replica, community, channel, &marker).await;
+
+        let mut db = Db::from_pools(writer.clone(), replica.clone());
+        db.fence().force_open_for_tests(chrono::Utc::now());
+        let cid = CommunityId::from_uuid(community);
+        let head_contents = |w: &thread::ChannelWindow| -> Vec<String> {
+            w.rows
+                .iter()
+                .map(|r| r.stored_event.event.content.clone())
+                .collect()
+        };
+
+        // Budget unset (rollout default): head → writer, fence open or not.
+        let head = db
+            .get_channel_window(cid, channel, 2, None, None)
+            .await
+            .expect("head, gate off");
+        assert_eq!(
+            head_contents(&head),
+            vec!["fresh-writer-only".to_string(), "shared".to_string()],
+            "head routing must default off"
+        );
+
+        // Budget set, entry fresh (just recorded): head → replica.
+        db.set_replica_head_max_age_for_tests(Some(std::time::Duration::from_secs(5)));
+        let head = db
+            .get_channel_window(cid, channel, 2, None, None)
+            .await
+            .expect("head, gate on");
+        assert_eq!(
+            head_contents(&head),
+            vec!["replica-only-marker".to_string(), "shared".to_string()],
+            "a fresh proved entry within budget must serve the head from the replica"
+        );
+
+        // Entry older than the budget: head falls back to the writer.
+        db.fence().close();
+        db.fence().force_open_for_tests_at(
+            chrono::Utc::now(),
+            std::time::Instant::now() - std::time::Duration::from_secs(10),
+        );
+        let head = db
+            .get_channel_window(cid, channel, 2, None, None)
+            .await
+            .expect("head, entry too old");
+        assert_eq!(
+            head_contents(&head),
+            vec!["fresh-writer-only".to_string(), "shared".to_string()],
+            "an over-budget entry must fail the head gate closed"
         );
 
         drop_scratch_db(&admin, replica, &rname).await;
@@ -6012,20 +6425,38 @@ mod tests {
 
         let base = admin_url().await;
         let idx = base.rfind('/').expect("db url has a path segment");
-        let db = Db::new(&DbConfig {
-            database_url: format!("{}/{}", &base[..idx], wname),
-            read_database_url: Some(format!("{}/{}", &base[..idx], rname)),
+        let writer_url = format!("{}/{}", &base[..idx], wname);
+        let replica_url = format!("{}/{}", &base[..idx], rname);
+
+        // Healthy schema: verification passes, probe starts. A SEPARATE Db
+        // instance, because its background probe legitimately opens its own
+        // fence (the heartbeat probe is writer-side only) — the refusal
+        // assertions below must run against a fence whose spawns were all
+        // refused.
+        let db_healthy = Db::new(&DbConfig {
+            database_url: writer_url.clone(),
+            read_database_url: Some(replica_url.clone()),
             max_connections: 2,
             ..DbConfig::default()
         })
         .await
         .expect("connect armed Db with replica");
-
-        // Healthy schema: verification passes, probe starts.
         assert!(
-            db.spawn_fence_probe().await.expect("verification passes"),
+            db_healthy
+                .spawn_fence_probe()
+                .await
+                .expect("verification passes"),
             "probe must start on a verified schema"
         );
+
+        let db = Db::new(&DbConfig {
+            database_url: writer_url,
+            read_database_url: Some(replica_url),
+            max_connections: 2,
+            ..DbConfig::default()
+        })
+        .await
+        .expect("connect armed Db with replica");
 
         // Sabotage A: catalog-shaped no-op — same trigger, gutted function
         // body. Catalog check alone would pass; behavior check must refuse.
@@ -6066,6 +6497,10 @@ mod tests {
             "fence must remain closed when verification refuses the probe"
         );
 
+        db_healthy.pool.close().await;
+        if let Some(rp) = &db_healthy.read_pool {
+            rp.close().await;
+        }
         db.pool.close().await;
         if let Some(rp) = &db.read_pool {
             rp.close().await;

@@ -146,6 +146,7 @@ async fn main() -> anyhow::Result<()> {
     let db_config = DbConfig {
         database_url: config.database_url.clone(),
         read_database_url: config.read_database_url.clone(),
+        replica_head_max_age_secs: config.replica_head_max_age_secs,
         ..DbConfig::default()
     };
     let db = Db::new(&db_config).await.map_err(|e| {
@@ -977,6 +978,12 @@ async fn main() -> anyhow::Result<()> {
                         None => {
                             metrics::gauge!("buzz_db_replica_fence_open").set(0.0);
                         }
+                    }
+                    // Probe liveness, ungated by staleness: how long since
+                    // the probe last committed a heartbeat token.
+                    if let Some(age) = pool_state.db.fence().heartbeat_age() {
+                        metrics::gauge!("buzz_db_replica_heartbeat_age_seconds")
+                            .set(age.as_secs_f64());
                     }
                 }
 

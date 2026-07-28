@@ -56,6 +56,10 @@ pub struct Config {
     /// Optional read-replica connection URL (e.g. an Aurora `cluster-ro-`
     /// endpoint). Unset means all reads stay on the writer.
     pub read_database_url: Option<String>,
+    /// Head-fetch replica budget `B` in seconds (`BUZZ_REPLICA_HEAD_MAX_AGE_SECS`).
+    /// `0` (the default) disables replica routing for head fetches; see
+    /// [`buzz_db::DbConfig::replica_head_max_age_secs`].
+    pub replica_head_max_age_secs: u64,
     /// Redis connection URL used by the pub/sub manager.
     pub redis_url: String,
     /// Maximum connections in the shared Redis pool. Defaults to 16.
@@ -414,6 +418,17 @@ impl Config {
             .ok()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty());
+
+        // Head-fetch replica budget: 0 = off (the rollout default), so this
+        // is a non-negative parse, unlike `positive_u64_from_env`.
+        let replica_head_max_age_secs = match std::env::var("BUZZ_REPLICA_HEAD_MAX_AGE_SECS") {
+            Ok(raw) => raw.trim().parse::<u64>().map_err(|_| {
+                ConfigError::InvalidValue(
+                    "BUZZ_REPLICA_HEAD_MAX_AGE_SECS must be a non-negative integer".to_string(),
+                )
+            })?,
+            Err(_) => 0,
+        };
 
         let redis_url =
             std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
@@ -873,6 +888,7 @@ impl Config {
             bind_addr,
             database_url,
             read_database_url,
+            replica_head_max_age_secs,
             redis_url,
             redis_pool_size,
             relay_url,
@@ -1034,6 +1050,44 @@ mod tests {
         assert_eq!(
             set.as_deref(),
             Some("postgres://buzz:pw@replica:5432/buzz") // sadscan:disable np.postgres.1
+        );
+    }
+
+    #[test]
+    fn replica_head_max_age_defaults_off_and_rejects_junk() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let previous = std::env::var_os("BUZZ_REPLICA_HEAD_MAX_AGE_SECS");
+
+        std::env::remove_var("BUZZ_REPLICA_HEAD_MAX_AGE_SECS");
+        let unset = Config::from_env()
+            .expect("config")
+            .replica_head_max_age_secs;
+
+        std::env::set_var("BUZZ_REPLICA_HEAD_MAX_AGE_SECS", "5");
+        let set = Config::from_env()
+            .expect("config")
+            .replica_head_max_age_secs;
+
+        std::env::set_var("BUZZ_REPLICA_HEAD_MAX_AGE_SECS", "0");
+        let zero = Config::from_env()
+            .expect("config")
+            .replica_head_max_age_secs;
+
+        std::env::set_var("BUZZ_REPLICA_HEAD_MAX_AGE_SECS", "soon");
+        let junk = Config::from_env();
+
+        if let Some(value) = previous {
+            std::env::set_var("BUZZ_REPLICA_HEAD_MAX_AGE_SECS", value);
+        } else {
+            std::env::remove_var("BUZZ_REPLICA_HEAD_MAX_AGE_SECS");
+        }
+
+        assert_eq!(unset, 0, "head routing must default off");
+        assert_eq!(set, 5);
+        assert_eq!(zero, 0, "explicit 0 is off");
+        assert!(
+            junk.is_err(),
+            "an unparsable budget must fail loudly, not silently disable"
         );
     }
 

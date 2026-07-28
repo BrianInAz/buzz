@@ -462,9 +462,9 @@ async fn handle_channel_window_filter(
         .as_ref()
         .map(|ks| ks.iter().map(|k| k.as_u16() as u32).collect());
 
-    let window = state
+    let (window, mut session) = state
         .db
-        .get_channel_window(
+        .get_channel_window_with_session(
             tenant.community(),
             ch_id,
             limit,
@@ -485,7 +485,11 @@ async fn handle_channel_window_filter(
 
     // 2. Aux closure: reactions/deletions/edits targeting retained rows, plus
     //    deletions targeting those aux events (the transitive second hop).
-    //    One round trip for the client instead of an #e fan-out.
+    //    One round trip for the client instead of an #e fan-out. Runs on the
+    //    SAME session that served the window: when the page came from a
+    //    proved replica connection, hopping to another pooled session (which
+    //    may sit at an older replay position) could drop aux rows the served
+    //    page's proof already covers.
     if extension_flag(raw, "include_aux") && !row_ids_hex.is_empty() {
         let mut seen_aux: std::collections::HashSet<nostr::EventId> =
             std::collections::HashSet::new();
@@ -495,8 +499,7 @@ async fn handle_channel_window_filter(
             aux_query.kinds = Some(hop_kinds.iter().map(|k| *k as i32).collect());
             aux_query.e_tags = Some(std::mem::take(&mut hop_ids));
             aux_query.limit = Some(1000);
-            let aux_events = state
-                .db
+            let aux_events = session
                 .query_events(&aux_query)
                 .await
                 .map_err(|e| internal_error(&format!("window aux error: {e}")))?;

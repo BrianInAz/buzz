@@ -316,6 +316,17 @@ pub async fn insert_event(
 /// Uses `QueryBuilder` for dynamic filter composition — avoids string concatenation
 /// while keeping all user values in bind parameters.
 pub async fn query_events(pool: &PgPool, q: &EventQuery) -> Result<Vec<StoredEvent>> {
+    let mut conn = pool.acquire().await?;
+    query_events_on(&mut conn, q).await
+}
+
+/// [`query_events`] on a specific session — the replica-routing path runs
+/// follow-up (aux) queries on the exact reader connection whose heartbeat
+/// observation proved coverage for the page they annotate.
+pub(crate) async fn query_events_on(
+    conn: &mut sqlx::PgConnection,
+    q: &EventQuery,
+) -> Result<Vec<StoredEvent>> {
     // Composite cursor requires both halves.
     if q.before_id.is_some() && q.until.is_none() {
         return Err(DbError::InvalidData(
@@ -538,7 +549,7 @@ pub async fn query_events(pool: &PgPool, q: &EventQuery) -> Result<Vec<StoredEve
     qb.push_bind(limit_val);
     qb.push(" OFFSET ").push_bind(offset_val);
 
-    let rows = qb.build().fetch_all(pool).await?;
+    let rows = qb.build().fetch_all(&mut *conn).await?;
 
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
