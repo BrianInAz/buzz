@@ -194,7 +194,8 @@ pub struct Db {
     /// default) — bounded-stale head semantics are a product decision, not
     /// an invariant, so the gate ships off.
     pub(crate) replica_head_max_age: Option<Duration>,
-    /// Whether the reader endpoint supports `aurora_server_id()` — probed
+    /// Whether the reader endpoint supports the Aurora PostgreSQL identity
+    /// function ([`replica_fence::AURORA_IDENTITY_FN`]) — probed
     /// once per process on the first routed read (on a plain autocommit
     /// checkout, outside any request transaction) and cached. Unset means
     /// not yet probed (or the probe hit a transient error and will retry).
@@ -657,7 +658,8 @@ impl Db {
         }
     }
 
-    /// Whether the reader endpoint supports `aurora_server_id()`, probed
+    /// Whether the reader endpoint supports the Aurora PostgreSQL identity
+    /// function ([`replica_fence::AURORA_IDENTITY_FN`]), probed
     /// once per process and cached (see [`Db::reader_aurora_identity`]).
     /// The probe runs on a plain autocommit checkout — never inside the
     /// request transaction, where an undefined-function error would abort

@@ -672,7 +672,15 @@ pub async fn probe_once(writer: &PgPool, fence: &ReplicaFence) -> Result<TokenEn
     }
 }
 
-/// Whether this reader endpoint supports `aurora_server_id()` — probed
+/// The Aurora **PostgreSQL** instance-identity function. Named once so the
+/// capability probe and the observation query can never disagree — and
+/// pinned by a unit test, because the MySQL-family spelling
+/// (`aurora_server_id`) is a near-miss that would make the capability probe
+/// cache a permanent `false` on real Aurora (42883) and silently strip the
+/// instance id from canary evidence.
+pub const AURORA_IDENTITY_FN: &str = "aurora_db_instance_identifier";
+
+/// Whether this reader endpoint supports [`AURORA_IDENTITY_FN`] — probed
 /// ONCE per process on a plain autocommit checkout, never inside a request
 /// transaction (an undefined-function error would abort the transaction
 /// and fail the proof). `Ok(false)` is the definitive "not Aurora" answer
@@ -680,9 +688,11 @@ pub async fn probe_once(writer: &PgPool, fence: &ReplicaFence) -> Result<TokenEn
 /// so the caller can retry the probe on a later request instead of caching
 /// a wrong answer.
 pub async fn reader_supports_aurora_identity(conn: &mut PgConnection) -> Result<bool, sqlx::Error> {
-    match sqlx::query("SELECT aurora_server_id()")
-        .fetch_one(&mut *conn)
-        .await
+    match sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {AURORA_IDENTITY_FN}()"
+    )))
+    .fetch_one(&mut *conn)
+    .await
     {
         Ok(_) => Ok(true),
         Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("42883") => Ok(false),
@@ -706,7 +716,7 @@ pub async fn observe_heartbeat(
          inet_server_port()::text, 'local') || ' pid=' || pg_backend_pid()::text";
     let sql = if aurora {
         format!(
-            "SELECT token, epoch, aurora_server_id() || ' @ ' || {ADDR_PID} AS backend \
+            "SELECT token, epoch, {AURORA_IDENTITY_FN}() || ' @ ' || {ADDR_PID} AS backend \
              FROM replica_heartbeat WHERE id = 1"
         )
     } else {
@@ -1026,6 +1036,17 @@ mod tests {
             .execute(&admin)
             .await
             .expect("drop role");
+    }
+
+    /// The Aurora PostgreSQL identity function name is exact — the
+    /// MySQL-family near-miss (`aurora_server_id`) would make the
+    /// capability probe cache a permanent false on real Aurora and
+    /// silently strip the instance id from canary evidence (Wren, delta
+    /// review of a472327). AWS reference: aurora_db_instance_identifier()
+    /// (Aurora PostgreSQL user guide; also awslabs/pg-collector).
+    #[test]
+    fn aurora_identity_function_name_is_the_postgres_one() {
+        assert_eq!(AURORA_IDENTITY_FN, "aurora_db_instance_identifier");
     }
 
     /// The Aurora identity capability probe must answer a definitive
