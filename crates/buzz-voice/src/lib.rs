@@ -1,6 +1,7 @@
 //! Reusable local voice primitives for Buzz.
 
 pub mod pocket;
+pub mod preparation;
 
 pub use pocket::{
     load_text_to_speech, load_voice_style, PocketTts, VoiceStyle, DEFAULT_VOICE, SAMPLE_RATE,

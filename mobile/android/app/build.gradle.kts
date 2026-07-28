@@ -92,7 +92,14 @@ android {
         versionName = flutter.versionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resValue("string", "app_name", "Buzz")
+        ndk {
+            // Native Pocket voice artifacts are built for device arm64 and
+            // emulator x86_64. Do not publish an installable ABI without them.
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
     }
+
+    sourceSets["main"].jniLibs.srcDir("../../.generated/voice/android/jniLibs")
 
     signingConfigs {
         if (hasUploadSigning) {
@@ -122,6 +129,20 @@ android {
             }
         }
     }
+}
+
+val buildBuzzVoiceNative by tasks.registering(Exec::class) {
+    workingDir(rootProject.projectDir.parentFile.parentFile)
+    environment("ANDROID_NDK_HOME", android.ndkDirectory.absolutePath)
+    commandLine(
+        "/bin/bash",
+        "-c",
+        ". ./bin/activate-hermit && ./scripts/mobile-voice-native.sh build-android",
+    )
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(buildBuzzVoiceNative)
 }
 
 dependencies {

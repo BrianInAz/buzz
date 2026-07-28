@@ -9,6 +9,7 @@ import UserNotifications
   private var qrScannerChannel: FlutterMethodChannel?
   private var inlinePhotoPickerSupportChannel: FlutterMethodChannel?
   private var nativeAttachmentPopoverCoordinator: NativeAttachmentPopoverCoordinator?
+  private var voiceAudioOutput: VoiceAudioOutput?
 
   override func application(
     _ application: UIApplication,
@@ -70,6 +71,7 @@ import UserNotifications
       messenger: messenger,
       parentViewController: nativeAttachmentRegistrar?.viewController
     )
+    voiceAudioOutput = VoiceAudioOutput(messenger: messenger)
   }
 
   private static func handleQrScannerMethodCall(

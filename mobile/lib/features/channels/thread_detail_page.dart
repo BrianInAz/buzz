@@ -4,6 +4,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 import '../../shared/theme/theme.dart';
+import '../../shared/voice/pocket_voice_controller.dart';
 import '../../shared/widgets/avatar_image.dart';
 import '../../shared/widgets/frosted_app_bar.dart';
 import '../../shared/widgets/frosted_scaffold.dart';
@@ -11,6 +12,7 @@ import '../../shared/widgets/message_author_meta.dart';
 import '../profile/user_cache_provider.dart';
 import '../profile/user_profile.dart';
 import 'channel_link_navigation.dart';
+import 'channel_management_provider.dart';
 import 'channel_typing_provider.dart';
 import 'thread_replies_provider.dart';
 import 'channels_provider.dart';
@@ -21,6 +23,8 @@ import '../profile/user_profile_sheet.dart';
 import 'message_actions.dart';
 import 'message_content.dart';
 import 'mentions/mention_candidates_provider.dart';
+import 'pocket_voice_button.dart';
+import 'pocket_voice_conversation.dart';
 import 'reaction_row.dart';
 import 'read_state/read_state_format.dart';
 import 'read_state/read_state_provider.dart';
@@ -68,6 +72,35 @@ class ThreadDetailPage extends HookConsumerWidget {
     });
 
     final fetchedReplies = replyMessages.value;
+    final membersState = ref.watch(channelMembersProvider(channelId));
+    final voiceConversation = useMemoized(PocketVoiceConversation.new);
+    final voiceEventKey =
+        repliesState.value?.map((event) => event.id).join(',') ?? '';
+    useEffect(
+      () {
+        final events = repliesState.value;
+        if (events == null) return null;
+        final spoken = voiceConversation.update(
+          events: events,
+          members: membersState.value,
+          currentPubkey: currentPubkey,
+          threadHeadId: threadHead.id,
+        );
+        for (final event in spoken) {
+          ref
+              .read(pocketVoiceProvider.notifier)
+              .speak('thread:$channelId:${threadHead.id}', event.content);
+        }
+        return null;
+      },
+      [
+        voiceEventKey,
+        membersState.value,
+        currentPubkey,
+        channelId,
+        threadHead.id,
+      ],
+    );
     final allMsgs = fetchedReplies == null
         ? allMessages
         : [
@@ -154,9 +187,14 @@ class ThreadDetailPage extends HookConsumerWidget {
     });
 
     return FrostedScaffold(
-      appBar: const FrostedAppBar(
-        title: Text('Thread'),
+      appBar: FrostedAppBar(
+        title: const Text('Thread'),
         titleStyle: channelTitleTextStyle,
+        actions: [
+          PocketVoiceButton(
+            conversationKey: 'thread:$channelId:${threadHead.id}',
+          ),
+        ],
       ),
       body: Column(
         children: [

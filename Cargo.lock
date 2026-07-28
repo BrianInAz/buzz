@@ -1295,11 +1295,20 @@ dependencies = [
  "ort",
  "ort-sys",
  "rand 0.10.1",
+ "regex",
  "sentencepiece-model",
  "serde",
  "serde_json",
  "sherpa-onnx",
  "tokenizers",
+]
+
+[[package]]
+name = "buzz-voice-mobile"
+version = "0.1.0"
+dependencies = [
+ "buzz-voice",
+ "serde_json",
 ]
 
 [[package]]
