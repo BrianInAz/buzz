@@ -159,6 +159,7 @@ async fn main() -> anyhow::Result<()> {
         database_url: config.database_url.clone(),
         read_database_url: config.read_database_url.clone(),
         replica_head_max_age_secs: config.replica_head_max_age_secs,
+        max_connections: config.db_pool_size,
         ..DbConfig::default()
     };
     let db = Db::new(&db_config).await.map_err(|e| {
