@@ -538,6 +538,27 @@ fn monitor_tick_noop_without_cancel() {
     );
 }
 
+#[test]
+fn monitor_releases_mic_gate_when_streaming_playback_drains() {
+    let tts_active = AtomicBool::new(true);
+
+    release_tts_active_if_drained(true, &tts_active);
+
+    assert!(
+        !tts_active.load(Ordering::Acquire),
+        "silent synthesis gaps must not suppress user speech",
+    );
+}
+
+#[test]
+fn monitor_keeps_mic_gate_while_streaming_playback_is_queued() {
+    let tts_active = AtomicBool::new(true);
+
+    release_tts_active_if_drained(false, &tts_active);
+
+    assert!(tts_active.load(Ordering::Acquire));
+}
+
 /// Stale-branch race (PR #997 review blocker): monitor observes
 /// `cancel == true`, then the worker — under `player_ops` — consumes the
 /// cancel and appends a fresh post-cancel utterance before the monitor

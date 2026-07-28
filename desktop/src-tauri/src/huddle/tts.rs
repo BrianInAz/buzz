@@ -470,6 +470,12 @@ fn tts_worker(
                             player.play();
                             tts_active.store(false, Ordering::Release);
                         }
+                    } else if tts_active.load(Ordering::Acquire) {
+                        let _ops = lock_player_ops(&player_ops);
+                        if !cancel.load(Ordering::Acquire) && !voice_cancel.load(Ordering::Acquire)
+                        {
+                            release_tts_active_if_drained(player.empty(), tts_active.as_ref());
+                        }
                     }
                     thread::sleep(MONITOR_TICK);
                 }
@@ -755,6 +761,12 @@ fn tts_worker(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn release_tts_active_if_drained(player_empty: bool, tts_active: &AtomicBool) {
+    if player_empty {
+        tts_active.store(false, Ordering::Release);
+    }
+}
 
 fn drain_tts_until_shutdown(
     text_rx: mpsc::Receiver<QueuedText>,
