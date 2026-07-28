@@ -110,7 +110,15 @@ pub(crate) async fn maybe_start_stt_pipeline(
     // transcription task's next POST sees a stale generation and exits.
     // Take the old pipeline OUT of the lock before dropping — Drop joins
     // the worker thread (~200ms) and must not block under the mutex.
-    let (tts_active, tts_cancel, agent_pubkeys_arc, session_gen, ptt_active_for_stt, old_stt) = {
+    let (
+        tts_active,
+        tts_synthesizing,
+        tts_cancel,
+        agent_pubkeys_arc,
+        session_gen,
+        ptt_active_for_stt,
+        old_stt,
+    ) = {
         let mut hs = state.huddle()?;
         // Invalidate any existing transcription task before replacing the pipeline.
         if hs.stt_pipeline.is_some() {
@@ -127,6 +135,7 @@ pub(crate) async fn maybe_start_stt_pipeline(
         };
         (
             Arc::clone(&hs.tts_active),
+            Arc::clone(&hs.tts_synthesizing),
             Some(Arc::clone(&hs.tts_cancel)),
             Arc::clone(&hs.agent_pubkeys),
             Arc::clone(&hs.session_generation),
@@ -138,7 +147,13 @@ pub(crate) async fn maybe_start_stt_pipeline(
     drop(old_stt);
 
     let constructed = tokio::task::spawn_blocking(move || {
-        stt::SttPipeline::new(model_dir, tts_active, tts_cancel, ptt_active_for_stt)
+        stt::SttPipeline::new(
+            model_dir,
+            tts_active,
+            tts_synthesizing,
+            tts_cancel,
+            ptt_active_for_stt,
+        )
     })
     .await;
     let (pipeline, text_rx) = match constructed {
@@ -195,7 +210,7 @@ pub(crate) async fn maybe_start_tts_pipeline(state: &AppState) -> Result<bool, S
     // Atomically check preconditions and claim the construction slot.
     // The sentinel prevents a second caller from starting construction
     // while we're building outside the lock.
-    let (tts_active, tts_cancel) = {
+    let (tts_active, tts_synthesizing, tts_cancel) = {
         let hs = state.huddle()?;
         if hs.tts_pipeline.is_some() {
             return Ok(false);
@@ -206,7 +221,11 @@ pub(crate) async fn maybe_start_tts_pipeline(state: &AppState) -> Result<bool, S
         if hs.tts_starting.swap(true, Ordering::AcqRel) {
             return Ok(false); // Another caller is already constructing.
         }
-        (Arc::clone(&hs.tts_active), Arc::clone(&hs.tts_cancel))
+        (
+            Arc::clone(&hs.tts_active),
+            Arc::clone(&hs.tts_synthesizing),
+            Arc::clone(&hs.tts_cancel),
+        )
     };
 
     // Construct outside the lock — this spawns the TTS worker thread and
@@ -227,6 +246,7 @@ pub(crate) async fn maybe_start_tts_pipeline(state: &AppState) -> Result<bool, S
         tts::TtsPipeline::new_with_voice(
             model_dir,
             tts_active,
+            tts_synthesizing,
             tts_cancel,
             &initial_voice,
             output_device,

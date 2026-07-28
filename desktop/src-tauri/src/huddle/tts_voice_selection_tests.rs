@@ -6,10 +6,12 @@ use std::sync::Arc;
 fn selecting_a_voice_raises_only_the_internal_cancel_and_retains_the_engine_handle() {
     let model_dir = tempfile::tempdir().expect("temp model dir");
     let active = Arc::new(AtomicBool::new(false));
+    let synthesizing = Arc::new(AtomicBool::new(false));
     let cancel = Arc::new(AtomicBool::new(false));
     let pipeline = TtsPipeline::new_with_voice(
         model_dir.path().to_path_buf(),
         active,
+        synthesizing,
         Arc::clone(&cancel),
         "reference_sample",
         None,
@@ -34,10 +36,12 @@ fn selecting_a_voice_raises_only_the_internal_cancel_and_retains_the_engine_hand
 fn reconciling_an_unpublished_pipeline_does_not_cancel_its_first_message() {
     let model_dir = tempfile::tempdir().expect("temp model dir");
     let active = Arc::new(AtomicBool::new(false));
+    let synthesizing = Arc::new(AtomicBool::new(false));
     let cancel = Arc::new(AtomicBool::new(false));
     let pipeline = TtsPipeline::new_with_voice(
         model_dir.path().to_path_buf(),
         active,
+        synthesizing,
         Arc::clone(&cancel),
         "reference_sample",
         None,

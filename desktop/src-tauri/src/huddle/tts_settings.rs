@@ -546,10 +546,12 @@ pub async fn preview_pocket_voice(
         .ok_or_else(|| format!("Voice {voice_key} has no local Pocket reference file"))?;
     tokio::task::spawn_blocking(move || {
         let active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let synthesizing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let pipeline = super::tts::TtsPipeline::new_with_voice(
             model_dir,
             active.clone(),
+            synthesizing,
             cancel,
             &voice_name,
             output_device,
@@ -594,6 +596,7 @@ mod tests {
         let pipeline = Arc::new(
             super::super::tts::TtsPipeline::new_with_voice(
                 model_dir.path().to_path_buf(),
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 Arc::clone(&cancel),
                 "reference_sample",

@@ -559,6 +559,27 @@ fn monitor_keeps_mic_gate_while_streaming_playback_is_queued() {
     assert!(tts_active.load(Ordering::Acquire));
 }
 
+#[test]
+fn streaming_gap_keeps_barge_in_armed_after_releasing_mic_gate() {
+    let tts_active = AtomicBool::new(true);
+    let tts_synthesizing = AtomicBool::new(true);
+
+    release_tts_active_if_drained(true, &tts_active);
+
+    assert!(!tts_active.load(Ordering::Acquire));
+    assert!(is_tts_interruptible(&tts_active, &tts_synthesizing));
+}
+
+#[test]
+fn completed_stream_disarms_barge_in_after_playback_drains() {
+    let tts_active = AtomicBool::new(true);
+    let tts_synthesizing = AtomicBool::new(false);
+
+    release_tts_active_if_drained(true, &tts_active);
+
+    assert!(!is_tts_interruptible(&tts_active, &tts_synthesizing));
+}
+
 /// Stale-branch race (PR #997 review blocker): monitor observes
 /// `cancel == true`, then the worker — under `player_ops` — consumes the
 /// cancel and appends a fresh post-cancel utterance before the monitor

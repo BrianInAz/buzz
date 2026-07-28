@@ -59,6 +59,8 @@ use streaming::STREAM_TAIL_SAMPLES;
 mod voice_transition;
 use voice_transition::*;
 
+type WorkerActivityState = (Arc<AtomicBool>, Arc<AtomicBool>);
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /// Maximum number of queued text items.
@@ -164,6 +166,7 @@ impl TtsPipeline {
     pub fn new_with_voice(
         model_dir: PathBuf,
         tts_active: Arc<AtomicBool>,
+        tts_synthesizing: Arc<AtomicBool>,
         cancel: Arc<AtomicBool>,
         voice: &str,
         output_device: Option<String>,
@@ -177,6 +180,7 @@ impl TtsPipeline {
         let voice_cancel = Arc::new(AtomicBool::new(false));
         let worker_voice_cancel = Arc::clone(&voice_cancel);
         let tts_active_worker = Arc::clone(&tts_active);
+        let tts_synthesizing_worker = Arc::clone(&tts_synthesizing);
         let voice = Arc::new(Mutex::new(voice.to_string()));
         let voice_worker = Arc::clone(&voice);
         let voice_generation = Arc::new(AtomicU64::new(1));
@@ -196,7 +200,7 @@ impl TtsPipeline {
                         worker_voice_change_ack,
                     ),
                     text_rx,
-                    tts_active_worker,
+                    (tts_active_worker, tts_synthesizing_worker),
                     shutdown_worker,
                     (cancel_worker, worker_voice_cancel),
                     output_device,
@@ -296,12 +300,13 @@ fn tts_worker(
     model_dir: PathBuf,
     voice_state: WorkerVoiceState,
     text_rx: mpsc::Receiver<QueuedText>,
-    tts_active: Arc<AtomicBool>,
+    activity_state: WorkerActivityState,
     shutdown: Arc<AtomicBool>,
     cancel_signals: WorkerCancelSignals,
     output_device: Option<String>,
 ) {
     let (selected_voice, voice_generation, voice_change_ack) = voice_state;
+    let (tts_active, tts_synthesizing) = activity_state;
     let (cancel, voice_cancel) = cancel_signals;
     // ── 1. Initialise TTS engine ──────────────────────────────────────────────
     let model_dir_str = model_dir.to_string_lossy().to_string();
@@ -673,8 +678,10 @@ fn tts_worker(
                 true
             };
 
+            tts_synthesizing.store(true, Ordering::Release);
             let synth_result =
                 engine.synth_chunk_streaming(text, "en", &style, SYNTH_STEPS, callback);
+            tts_synthesizing.store(false, Ordering::Release);
             let callback_error = lock_unpoisoned(&stream_error).take();
             let queued_during_synthesis = lock_unpoisoned(&stream).queued_samples > 0;
             if queued_during_synthesis {
@@ -757,6 +764,7 @@ fn tts_worker(
     }
 
     finish_voice_change_ack(&voice_change_ack);
+    tts_synthesizing.store(false, Ordering::Release);
     tts_active.store(false, Ordering::Release);
 }
 
@@ -766,6 +774,10 @@ fn release_tts_active_if_drained(player_empty: bool, tts_active: &AtomicBool) {
     if player_empty {
         tts_active.store(false, Ordering::Release);
     }
+}
+
+pub(super) fn is_tts_interruptible(tts_active: &AtomicBool, tts_synthesizing: &AtomicBool) -> bool {
+    tts_active.load(Ordering::Acquire) || tts_synthesizing.load(Ordering::Acquire)
 }
 
 fn drain_tts_until_shutdown(

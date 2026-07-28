@@ -400,9 +400,14 @@ impl PocketTts {
             return Ok(SynthesisOutcome::Interrupted);
         }
         let callback_predicate = Arc::clone(&is_interrupted);
-        self.synth_chunk_with_callback(text, style, move |_samples, _progress| {
+        let outcome = self.synth_chunk_with_callback(text, style, move |_samples, _progress| {
             !callback_predicate()
-        })
+        })?;
+        if is_interrupted() {
+            Ok(SynthesisOutcome::Interrupted)
+        } else {
+            Ok(outcome)
+        }
     }
 
     /// Synthesise `text` while reporting each newly decoded audio chunk.
