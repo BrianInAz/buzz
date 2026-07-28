@@ -623,6 +623,7 @@ mobile-test:
 
 # Compile an unsigned Android debug APK (worktree-aware debug identity)
 mobile-build-android:
+    bash scripts/test-mobile-voice-native.sh
     ./scripts/mobile-worktree-overrides.sh
     unset GIT_DIR GIT_WORK_TREE; cd {{mobile_dir}} && flutter build apk --debug --no-pub
 

@@ -143,6 +143,41 @@ android_target() {
   esac
 }
 
+android_toolchain() {
+  local ndk_root="$1"
+  local host_os="${2:-$(uname -s)}"
+  local host_arch="${3:-$(uname -m)}"
+  local prebuilt_root="${ndk_root}/toolchains/llvm/prebuilt"
+  local candidates=()
+
+  case "${host_os}:${host_arch}" in
+    Linux:x86_64)
+      candidates=("linux-x86_64")
+      ;;
+    Darwin:arm64)
+      candidates=("darwin-arm64" "darwin-x86_64")
+      ;;
+    Darwin:x86_64)
+      candidates=("darwin-x86_64")
+      ;;
+    *)
+      echo "unsupported Android NDK host: ${host_os}/${host_arch}" >&2
+      return 1
+      ;;
+  esac
+
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -d "${prebuilt_root}/${candidate}" ]]; then
+      printf '%s\n' "${prebuilt_root}/${candidate}"
+      return
+    fi
+  done
+
+  echo "Android NDK toolchain not installed for ${host_os}/${host_arch}: expected ${candidates[*]} under ${prebuilt_root}" >&2
+  return 1
+}
+
 build_android_abi() {
   local abi="$1"
   local target
@@ -152,10 +187,8 @@ build_android_abi() {
     echo "ANDROID_NDK_HOME must point at an Android NDK" >&2
     exit 1
   fi
-  local toolchain="${ndk_root}/toolchains/llvm/prebuilt/darwin-arm64"
-  if [[ ! -d "$toolchain" ]]; then
-    toolchain="${ndk_root}/toolchains/llvm/prebuilt/darwin-x86_64"
-  fi
+  local toolchain
+  toolchain="$(android_toolchain "$ndk_root")"
   local api="${BUZZ_ANDROID_MIN_API:-24}"
   local clang_target
   if [[ "$abi" == "arm64-v8a" ]]; then
@@ -201,14 +234,16 @@ build_android() {
   build_android_abi "x86_64"
 }
 
-case "${1:-}" in
-  fetch) fetch_native ;;
-  build-ios) build_ios ;;
-  build-ios-current) build_ios_current ;;
-  build-android) build_android ;;
-  build-all)
-    build_ios
-    build_android
-    ;;
-  *) usage ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  case "${1:-}" in
+    fetch) fetch_native ;;
+    build-ios) build_ios ;;
+    build-ios-current) build_ios_current ;;
+    build-android) build_android ;;
+    build-all)
+      build_ios
+      build_android
+      ;;
+    *) usage ;;
+  esac
+fi
