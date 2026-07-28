@@ -198,8 +198,15 @@ pub struct Db {
 
 /// The session that served (or will serve) a routed read, so follow-up
 /// queries in the same request (the channel-window aux closure) run on the
-/// **same proved connection** — a different pooled reader session may sit at
-/// a different replay position, so hopping sessions would discard the proof.
+/// **same proved snapshot** — a different pooled reader session may sit at a
+/// different replay position, and even the same connection advances its
+/// snapshot between autocommit statements.
+///
+/// `Replica` holds the request's `REPEATABLE READ, READ ONLY` transaction:
+/// the heartbeat observation was its first statement, so the snapshot the
+/// proof was taken against is exactly the snapshot every follow-up sees.
+/// Dropping the session rolls the read-only transaction back and returns
+/// the connection to the pool.
 ///
 /// `Writer` carries the writer pool: follow-ups there are authoritative by
 /// construction and need no session pinning.
@@ -208,8 +215,8 @@ pub struct ReadSession {
 }
 
 enum ReadSessionInner {
-    /// A replica session whose heartbeat observation proved fence coverage.
-    Replica(sqlx::pool::PoolConnection<sqlx::Postgres>),
+    /// The proved replica request transaction (snapshot-anchored).
+    Replica(sqlx::Transaction<'static, sqlx::Postgres>),
     /// The writer pool (cheap clone; Arc-backed).
     Writer(PgPool),
 }
@@ -218,7 +225,7 @@ impl ReadSession {
     /// Query events on this session (see [`Db::query_events`]).
     pub async fn query_events(&mut self, q: &EventQuery) -> Result<Vec<StoredEvent>> {
         match &mut self.inner {
-            ReadSessionInner::Replica(conn) => event::query_events_on(conn, q).await,
+            ReadSessionInner::Replica(tx) => event::query_events_on(&mut *tx, q).await,
             ReadSessionInner::Writer(pool) => event::query_events(pool, q).await,
         }
     }
@@ -231,9 +238,10 @@ impl ReadSession {
 
 /// Where one routed read is served (see [`Db::route_read`]).
 enum RouteDecision {
-    /// A reader session that proved this fence entry — the page runs here.
+    /// A reader request transaction whose first-statement heartbeat
+    /// observation proved this fence entry — the page runs inside it.
     Replica(
-        sqlx::pool::PoolConnection<sqlx::Postgres>,
+        sqlx::Transaction<'static, sqlx::Postgres>,
         replica_fence::TokenEntry,
     ),
     /// Fail closed: serve from the writer pool.
@@ -580,35 +588,43 @@ impl Db {
         self.read_pool.is_some()
     }
 
-    /// Acquire a reader session and complete the connection-local half of
-    /// the fence proof: observe the heartbeat token/epoch **on that exact
-    /// session** and resolve it against the retained ring. Returns the
-    /// proved session together with the strongest [`replica_fence::TokenEntry`]
-    /// its observation supports, or the fail-closed reason for route
-    /// metrics.
+    /// Open a reader request transaction and complete the connection-local
+    /// half of the fence proof: `BEGIN ISOLATION LEVEL REPEATABLE READ, READ
+    /// ONLY`, then observe the heartbeat token/epoch as the transaction's
+    /// **first statement** — anchoring the snapshot every follow-up
+    /// statement (page, participants, aux closure) sees to exactly the
+    /// snapshot the proof was taken against — and resolve it against the
+    /// retained ring. Returns the open transaction together with the
+    /// strongest [`replica_fence::TokenEntry`] its observation supports, or
+    /// the fail-closed reason for route metrics.
     ///
-    /// Everything but `Ok` fails closed — acquire failure, missing
-    /// heartbeat row (migration not yet replayed there), observation error,
-    /// epoch mismatch, or a token below every retained entry all route the
-    /// request to the writer.
+    /// `REPEATABLE READ` is the strongest isolation a hot standby supports
+    /// (`SERIALIZABLE` is writer-only); `READ ONLY` documents intent and
+    /// rejects accidental writes. Everything but `Ok` fails closed — begin
+    /// failure, missing heartbeat row (migration not yet replayed there),
+    /// observation error, epoch mismatch, or a token below every retained
+    /// entry all route the request to the writer.
     async fn proved_reader(
         &self,
         read_pool: &PgPool,
     ) -> std::result::Result<
         (
-            sqlx::pool::PoolConnection<sqlx::Postgres>,
+            sqlx::Transaction<'static, sqlx::Postgres>,
             replica_fence::TokenEntry,
         ),
         &'static str,
     > {
-        let mut conn = match read_pool.acquire().await {
-            Ok(conn) => conn,
+        let mut tx = match read_pool
+            .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .await
+        {
+            Ok(tx) => tx,
             Err(e) => {
-                tracing::warn!(error = %e, "reader acquire failed; routing to writer");
+                tracing::warn!(error = %e, "reader transaction begin failed; routing to writer");
                 return Err("reader_validation_error");
             }
         };
-        let obs = match replica_fence::observe_heartbeat(&mut conn).await {
+        let obs = match replica_fence::observe_heartbeat(&mut tx).await {
             Ok(Some(observation)) => observation,
             Ok(None) => return Err("reader_validation_error"),
             Err(e) => {
@@ -622,9 +638,9 @@ impl Db {
                     token = obs.token,
                     proved_token = entry.token,
                     backend = %obs.backend,
-                    "reader session proved fence coverage"
+                    "reader snapshot proved fence coverage"
                 );
-                Ok((conn, entry))
+                Ok((tx, entry))
             }
             replica_fence::ResolveOutcome::EpochMismatch => Err("reader_validation_error"),
             replica_fence::ResolveOutcome::TokenBehind => Err("reader_token_behind"),
@@ -2186,9 +2202,9 @@ impl Db {
             Some(_) => ("thread_cursor", RoutePredicate::Cursor(None)),
             None => ("thread_head", RoutePredicate::Head),
         };
-        if let RouteDecision::Replica(mut conn, entry) = self.route_read(path, predicate).await {
+        if let RouteDecision::Replica(mut tx, entry) = self.route_read(path, predicate).await {
             let replies = thread::get_thread_replies_on(
-                &mut conn,
+                &mut tx,
                 community_id,
                 root_event_id,
                 depth_limit,
@@ -2287,9 +2303,9 @@ impl Db {
             .route_read(path, RoutePredicate::from_channel_cursor(&cursor))
             .await
         {
-            RouteDecision::Replica(mut conn, _entry) => {
+            RouteDecision::Replica(mut tx, _entry) => {
                 let window = thread::get_channel_window_on(
-                    &mut conn,
+                    &mut tx,
                     community_id,
                     channel_id,
                     limit,
@@ -2300,7 +2316,7 @@ impl Db {
                 Ok((
                     window,
                     ReadSession {
-                        inner: ReadSessionInner::Replica(conn),
+                        inner: ReadSessionInner::Replica(tx),
                     },
                 ))
             }
@@ -2363,7 +2379,7 @@ impl Db {
             },
         }
         match self.proved_reader(read_pool).await {
-            Ok((conn, entry)) => {
+            Ok((tx, entry)) => {
                 let (holds, reason): (bool, &'static str) = match &predicate {
                     RoutePredicate::Cursor(Some(ts)) => (*ts <= entry.fence_wall, "covered"),
                     // No upper bound: the caller post-verifies the served
@@ -2377,7 +2393,7 @@ impl Db {
                 };
                 if holds {
                     Self::record_route(path, "replica", reason);
-                    RouteDecision::Replica(conn, entry)
+                    RouteDecision::Replica(tx, entry)
                 } else {
                     // The session proves an older entry than the predicate
                     // needs (replication lag) — fail closed.
@@ -5844,6 +5860,103 @@ mod tests {
             "cursor page must be served by the replica"
         );
 
+        drop_scratch_db(&admin, replica, &rname).await;
+        drop_scratch_db(&admin, writer, &wname).await;
+    }
+
+    /// Snapshot continuity (Wren, review of 17ea2ff6a): the routed request
+    /// runs inside ONE `REPEATABLE READ, READ ONLY` transaction whose first
+    /// statement was the heartbeat observation — so a row committed on the
+    /// replica *after* the proof must be invisible to every follow-up
+    /// statement in the same request (page, participants, aux). This
+    /// distinguishes the transaction contract from mere connection reuse:
+    /// autocommit statements on the same backend advance their snapshot
+    /// per statement and WOULD see the mid-request row.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn routed_request_holds_one_snapshot_across_page_and_aux() {
+        let admin = PgPool::connect(&admin_url().await)
+            .await
+            .expect("connect admin");
+        let (writer, wname) = create_scratch_db(&admin, "snap_w").await;
+        let (replica, rname) = create_scratch_db(&admin, "snap_r").await;
+
+        let author = nostr::Keys::generate();
+        let community = Uuid::new_v4();
+        let channel = Uuid::new_v4();
+        seed_community_channel(&writer, community, channel, &author).await;
+        seed_community_channel(&replica, community, channel, &author).await;
+
+        let base = 1_700_000_000u64;
+        let m1 = signed_event_at(&author, "m1", base);
+        let m2 = signed_event_at(&author, "m2", base + 10);
+        for pool in [&writer, &replica] {
+            for ev in [&m1, &m2] {
+                insert_top_level(pool, community, channel, ev).await;
+            }
+        }
+
+        let db = Db::from_pools(writer.clone(), replica.clone());
+        db.fence().force_open_for_tests(chrono::Utc::now());
+        let cid = CommunityId::from_uuid(community);
+
+        // Head page on the writer yields the cursor for a replica-routed page.
+        let head = db
+            .get_channel_window(cid, channel, 1, None, None)
+            .await
+            .expect("head window");
+        let cursor = head.next_cursor.expect("has_more implies next_cursor");
+
+        // Route the cursor page to the replica and HOLD the session.
+        let (window, mut session) = db
+            .get_channel_window_with_session(cid, channel, 10, Some(cursor), None)
+            .await
+            .expect("routed cursor window");
+        assert!(
+            session.is_replica(),
+            "fixture must route this page to the replica"
+        );
+        assert_eq!(window.rows.len(), 1, "page after m2 is [m1]");
+
+        // Mid-request: a new event commits on the replica (stands in for
+        // replay advancing between the page and the aux closure).
+        let mid = signed_event_at(&author, "mid-request-commit", base + 5);
+        insert_top_level(&replica, community, channel, &mid).await;
+
+        // A fresh autocommit statement on ANOTHER session sees it — the row
+        // is really there (control for the assertion below).
+        let mut control = EventQuery::for_community(cid);
+        control.channel_id = Some(channel);
+        let visible_elsewhere = event::query_events(&replica, &control)
+            .await
+            .expect("control query");
+        assert!(
+            visible_elsewhere
+                .iter()
+                .any(|se| se.event.content == "mid-request-commit"),
+            "control: the mid-request row must be committed and visible to a new snapshot"
+        );
+
+        // The held request session must NOT see it: its snapshot was
+        // anchored by the heartbeat observation, before the commit.
+        let mut aux = EventQuery::for_community(cid);
+        aux.channel_id = Some(channel);
+        let in_request = session.query_events(&aux).await.expect("aux query");
+        assert!(
+            !in_request
+                .iter()
+                .any(|se| se.event.content == "mid-request-commit"),
+            "request transaction must hold the proof-time snapshot; a \
+             mid-request commit leaking in means the aux ran outside the \
+             request transaction (autocommit connection reuse)"
+        );
+        // Rows from the proof-time snapshot are still served.
+        assert!(
+            in_request.iter().any(|se| se.event.content == "m1"),
+            "proof-time rows must remain visible in the request snapshot"
+        );
+
+        drop(session);
         drop_scratch_db(&admin, replica, &rname).await;
         drop_scratch_db(&admin, writer, &wname).await;
     }

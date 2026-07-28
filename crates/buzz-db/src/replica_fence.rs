@@ -33,9 +33,13 @@
 //!
 //! Unlike the previous WAL-LSN observation (`pg_last_wal_replay_lsn()`, which
 //! Aurora reader endpoints hide), the token observation is portable and —
-//! critically — **connection-local**: the proof binds to the exact reader
-//! session that will serve the page, never to a different pooled session
-//! (readers behind one endpoint may sit at different replay positions).
+//! critically — **snapshot-local**: routing opens a `REPEATABLE READ, READ
+//! ONLY` transaction on the reader session that will serve the page and
+//! observes the heartbeat as its first statement, so the proof binds to the
+//! exact snapshot every follow-up statement in the request (page,
+//! participants, aux closure) reads from — never to a different pooled
+//! session (readers behind one endpoint may sit at different replay
+//! positions), and never to a later autocommit snapshot on the same wire.
 //! An observed token lower than the newest retained `M` is ordinary
 //! replication lag, not a fault; the resolver simply proves from an older
 //! retained `M`. Regression detection is writer-side only: a non-monotonic

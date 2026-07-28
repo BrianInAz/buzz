@@ -485,11 +485,12 @@ async fn handle_channel_window_filter(
 
     // 2. Aux closure: reactions/deletions/edits targeting retained rows, plus
     //    deletions targeting those aux events (the transitive second hop).
-    //    One round trip for the client instead of an #e fan-out. Runs on the
-    //    SAME session that served the window: when the page came from a
-    //    proved replica connection, hopping to another pooled session (which
-    //    may sit at an older replay position) could drop aux rows the served
-    //    page's proof already covers.
+    //    One round trip for the client instead of an #e fan-out. Runs in the
+    //    SAME request transaction that served the window: when the page came
+    //    from a proved replica session, the heartbeat observation anchored a
+    //    REPEATABLE READ snapshot, so the aux hops see exactly the state the
+    //    proof covered — another pooled session (or even another autocommit
+    //    statement) could sit at a different replay position.
     if extension_flag(raw, "include_aux") && !row_ids_hex.is_empty() {
         let mut seen_aux: std::collections::HashSet<nostr::EventId> =
             std::collections::HashSet::new();
