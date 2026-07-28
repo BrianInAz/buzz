@@ -194,6 +194,12 @@ pub struct Db {
     /// default) — bounded-stale head semantics are a product decision, not
     /// an invariant, so the gate ships off.
     pub(crate) replica_head_max_age: Option<Duration>,
+    /// Whether the reader endpoint supports `aurora_server_id()` — probed
+    /// once per process on the first routed read (on a plain autocommit
+    /// checkout, outside any request transaction) and cached. Unset means
+    /// not yet probed (or the probe hit a transient error and will retry).
+    /// Shared across `Db` clones.
+    pub(crate) reader_aurora_identity: std::sync::Arc<std::sync::OnceLock<bool>>,
 }
 
 /// The session that served (or will serve) a routed read, so follow-up
@@ -473,6 +479,7 @@ impl Db {
             read_pool,
             fence: std::sync::Arc::new(replica_fence::ReplicaFence::new()),
             replica_head_max_age,
+            reader_aurora_identity: std::sync::Arc::new(std::sync::OnceLock::new()),
         })
     }
 
@@ -512,6 +519,7 @@ impl Db {
             read_pool: None,
             fence: std::sync::Arc::new(replica_fence::ReplicaFence::new()),
             replica_head_max_age: None,
+            reader_aurora_identity: std::sync::Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -529,6 +537,7 @@ impl Db {
             read_pool: Some(read_pool),
             fence: std::sync::Arc::new(replica_fence::ReplicaFence::new()),
             replica_head_max_age: None,
+            reader_aurora_identity: std::sync::Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -614,6 +623,7 @@ impl Db {
         ),
         &'static str,
     > {
+        let aurora = self.reader_aurora_capability(read_pool).await;
         let mut tx = match read_pool
             .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .await
@@ -624,7 +634,7 @@ impl Db {
                 return Err("reader_validation_error");
             }
         };
-        let obs = match replica_fence::observe_heartbeat(&mut tx).await {
+        let obs = match replica_fence::observe_heartbeat(&mut tx, aurora).await {
             Ok(Some(observation)) => observation,
             Ok(None) => return Err("reader_validation_error"),
             Err(e) => {
@@ -644,6 +654,29 @@ impl Db {
             }
             replica_fence::ResolveOutcome::EpochMismatch => Err("reader_validation_error"),
             replica_fence::ResolveOutcome::TokenBehind => Err("reader_token_behind"),
+        }
+    }
+
+    /// Whether the reader endpoint supports `aurora_server_id()`, probed
+    /// once per process and cached (see [`Db::reader_aurora_identity`]).
+    /// The probe runs on a plain autocommit checkout — never inside the
+    /// request transaction, where an undefined-function error would abort
+    /// it. Probe failure (acquire or transient) degrades to the plain
+    /// identity tuple for THIS request without caching, so a later request
+    /// retries; identity is evidence, never a routing gate.
+    async fn reader_aurora_capability(&self, read_pool: &PgPool) -> bool {
+        if let Some(cached) = self.reader_aurora_identity.get() {
+            return *cached;
+        }
+        let Ok(mut conn) = read_pool.acquire().await else {
+            return false;
+        };
+        match replica_fence::reader_supports_aurora_identity(&mut conn).await {
+            Ok(supported) => *self.reader_aurora_identity.get_or_init(|| supported),
+            Err(e) => {
+                tracing::debug!(error = %e, "aurora identity probe failed; will retry");
+                false
+            }
         }
     }
 

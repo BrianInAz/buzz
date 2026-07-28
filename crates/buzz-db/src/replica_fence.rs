@@ -672,20 +672,52 @@ pub async fn probe_once(writer: &PgPool, fence: &ReplicaFence) -> Result<TokenEn
     }
 }
 
+/// Whether this reader endpoint supports `aurora_server_id()` — probed
+/// ONCE per process on a plain autocommit checkout, never inside a request
+/// transaction (an undefined-function error would abort the transaction
+/// and fail the proof). `Ok(false)` is the definitive "not Aurora" answer
+/// (undefined_function, SQLSTATE 42883); transient errors surface as `Err`
+/// so the caller can retry the probe on a later request instead of caching
+/// a wrong answer.
+pub async fn reader_supports_aurora_identity(conn: &mut PgConnection) -> Result<bool, sqlx::Error> {
+    match sqlx::query("SELECT aurora_server_id()")
+        .fetch_one(&mut *conn)
+        .await
+    {
+        Ok(_) => Ok(true),
+        Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("42883") => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 /// Observe the heartbeat on a specific reader session — the
 /// connection-local half of the proof. Returns the observed token/epoch
-/// plus the backend identity of the session (`inet_server_addr()`;
-/// `"local"` on unix sockets) for route-decision evidence. `None` when the
-/// row is missing there (migration not yet replayed): fail closed.
+/// plus the backend identity of the session for route-decision evidence:
+/// `addr:port pid=N` (`local` on unix sockets), prefixed with the Aurora
+/// instance id when `aurora` is set (only pass `true` after
+/// [`reader_supports_aurora_identity`] confirmed it — the function
+/// reference fails at parse time on plain Postgres). `None` when the row
+/// is missing there (migration not yet replayed): fail closed.
 pub async fn observe_heartbeat(
     conn: &mut PgConnection,
+    aurora: bool,
 ) -> Result<Option<HeartbeatObservation>, sqlx::Error> {
-    let row = sqlx::query(
-        "SELECT token, epoch, COALESCE(host(inet_server_addr()), 'local') AS backend \
-         FROM replica_heartbeat WHERE id = 1",
-    )
-    .fetch_optional(&mut *conn)
-    .await?;
+    const ADDR_PID: &str = "COALESCE(host(inet_server_addr()) || ':' || \
+         inet_server_port()::text, 'local') || ' pid=' || pg_backend_pid()::text";
+    let sql = if aurora {
+        format!(
+            "SELECT token, epoch, aurora_server_id() || ' @ ' || {ADDR_PID} AS backend \
+             FROM replica_heartbeat WHERE id = 1"
+        )
+    } else {
+        format!(
+            "SELECT token, epoch, {ADDR_PID} AS backend \
+             FROM replica_heartbeat WHERE id = 1"
+        )
+    };
+    let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .fetch_optional(&mut *conn)
+        .await?;
     Ok(row.map(|r| HeartbeatObservation {
         token: r.get("token"),
         epoch: r.get("epoch"),
@@ -996,6 +1028,28 @@ mod tests {
             .expect("drop role");
     }
 
+    /// The Aurora identity capability probe must answer a definitive
+    /// `false` on plain Postgres (undefined_function), not error — and the
+    /// error path must not poison the connection for later statements.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn aurora_identity_probe_reports_false_on_plain_postgres() {
+        let pool = PgPool::connect(&test_db_url()).await.expect("connect");
+        let mut conn = pool.acquire().await.expect("conn");
+        assert!(
+            !reader_supports_aurora_identity(&mut conn)
+                .await
+                .expect("probe must not error on plain postgres"),
+            "plain postgres must report no aurora identity support"
+        );
+        // The failed function lookup must not have wedged the session.
+        let one: i32 = sqlx::query_scalar("SELECT 1")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("connection usable after probe");
+        assert_eq!(one, 1);
+    }
+
     /// End-to-end probe against a real database: each probe commits a
     /// strictly newer token, records a retained entry, and a session on the
     /// same database observes a token/epoch that resolves that entry.
@@ -1018,12 +1072,22 @@ mod tests {
         // A "reader" session on the same database observes at least the
         // second token and proves the newest retained entry.
         let mut conn = pool.acquire().await.expect("reader conn");
-        let obs = observe_heartbeat(&mut conn)
+        let obs = observe_heartbeat(&mut conn, false)
             .await
             .expect("observe")
             .expect("heartbeat row present");
         assert!(obs.token >= second.token);
-        assert!(!obs.backend.is_empty(), "backend identity recorded");
+        assert!(
+            obs.backend.contains(" pid="),
+            "backend identity must carry the backend pid, got {:?}",
+            obs.backend
+        );
+        // TCP fixtures also carry addr:port; unix-socket fixtures read 'local'.
+        assert!(
+            obs.backend.starts_with("local pid=") || obs.backend.contains(':'),
+            "backend identity must carry addr:port or 'local', got {:?}",
+            obs.backend
+        );
         let proof = fence
             .resolve(obs.token, obs.epoch)
             .proved()
@@ -1052,7 +1116,7 @@ mod tests {
 
         let before = probe_once(&pool, &fence).await.expect("probe");
         let mut conn = pool.acquire().await.expect("conn");
-        let old_epoch = observe_heartbeat(&mut conn)
+        let old_epoch = observe_heartbeat(&mut conn, false)
             .await
             .expect("observe")
             .expect("row")
@@ -1072,7 +1136,7 @@ mod tests {
             "old-epoch observations must fail closed after rotation"
         );
         // A fresh observation on the new timeline proves the rotated entry.
-        let obs = observe_heartbeat(&mut conn)
+        let obs = observe_heartbeat(&mut conn, false)
             .await
             .expect("observe")
             .expect("row");
