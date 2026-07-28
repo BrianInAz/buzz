@@ -222,36 +222,75 @@ pub struct ReadSession {
 }
 
 enum ReadSessionInner {
-    /// The proved replica request transaction (snapshot-anchored).
-    Replica(sqlx::Transaction<'static, sqlx::Postgres>),
+    /// The proved replica request transaction (snapshot-anchored), plus the
+    /// writer pool so a mid-request replica failure (e.g. a hot-standby
+    /// recovery conflict cancelling the held snapshot) degrades the session
+    /// to the writer instead of surfacing an error: degraded capacity,
+    /// never holes — and never a 500 the writer could have served.
+    Replica {
+        tx: sqlx::Transaction<'static, sqlx::Postgres>,
+        writer: PgPool,
+    },
     /// The writer pool (cheap clone; Arc-backed).
     Writer(PgPool),
 }
 
 impl ReadSession {
     /// Query events on this session (see [`Db::query_events`]).
+    ///
+    /// If the proved replica transaction fails mid-request, the session
+    /// permanently degrades to the writer and the query is re-run there.
+    /// The writer is always at or ahead of any replica replay position, so
+    /// the degraded follow-up can only observe *more* than the proof-time
+    /// snapshot, never less — fresher aux rows, the same failure semantics
+    /// as a request that routed to the writer to begin with.
     pub async fn query_events(&mut self, q: &EventQuery) -> Result<Vec<StoredEvent>> {
-        match &mut self.inner {
-            ReadSessionInner::Replica(tx) => event::query_events_on(&mut *tx, q).await,
-            ReadSessionInner::Writer(pool) => event::query_events(pool, q).await,
-        }
+        let degraded = match &mut self.inner {
+            ReadSessionInner::Replica { tx, writer } => {
+                match event::query_events_on(tx, q).await {
+                    Ok(rows) => return Ok(rows),
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "replica session query failed mid-request; degrading to writer"
+                        );
+                        // Deliberately not a `buzz_db_route_decision` event:
+                        // the page's route was already recorded, and the
+                        // offload metric must stay one-event-per-request.
+                        metrics::counter!("buzz_db_read_session_degraded").increment(1);
+                        writer.clone()
+                    }
+                }
+            }
+            ReadSessionInner::Writer(pool) => return event::query_events(pool, q).await,
+        };
+        // Replacing the inner drops the replica transaction (rolling it
+        // back and returning the reader connection to its pool).
+        self.inner = ReadSessionInner::Writer(degraded.clone());
+        event::query_events(&degraded, q).await
     }
 
     /// Whether this session is a proved replica connection (observability).
     pub fn is_replica(&self) -> bool {
-        matches!(self.inner, ReadSessionInner::Replica(_))
+        matches!(self.inner, ReadSessionInner::Replica { .. })
     }
 }
 
 /// Where one routed read is served (see [`Db::route_read`]).
 enum RouteDecision {
     /// A reader request transaction whose first-statement heartbeat
-    /// observation proved this fence entry — the page runs inside it.
+    /// observation proved this fence entry — the page runs inside it. The
+    /// `&'static str` is the metric reason (`covered`/`fresh`); the caller
+    /// records the route only once the page is actually served from the
+    /// replica, so a post-verification writer re-run or a mid-query replica
+    /// failure emits exactly one `buzz_db_route_decision` event per request
+    /// (the offload percentage is read straight off `decision="replica"`).
     Replica(
         sqlx::Transaction<'static, sqlx::Postgres>,
         replica_fence::TokenEntry,
+        &'static str,
     ),
-    /// Fail closed: serve from the writer pool.
+    /// Fail closed: serve from the writer pool (already recorded).
     Writer,
 }
 
@@ -585,11 +624,13 @@ impl Db {
     /// The pool for lag-tolerant reads: the read replica when configured,
     /// otherwise the writer pool.
     ///
-    /// Routing contract — a query may use this pool only when a stale (bounded
-    /// replication lag) result is acceptable to its caller. Keyset-cursor
-    /// pagination over immutable history qualifies; head-of-channel fetches,
-    /// auth/membership checks, locks, and anything inside a transaction do not.
-    pub fn read(&self) -> &PgPool {
+    /// Removed as a public escape hatch (Dawn, review of 1b0aa0dfa): the
+    /// raw replica pool carries **no fence proof**, which is exactly the
+    /// bug class the routed-read machinery exists to eliminate. All replica
+    /// reads must go through [`Db::route_read`]-backed entry points; this
+    /// remains only for the fence's own plumbing tests.
+    #[cfg(test)]
+    fn read(&self) -> &PgPool {
         self.read_pool.as_ref().unwrap_or(&self.pool)
     }
 
@@ -2237,8 +2278,10 @@ impl Db {
             Some(_) => ("thread_cursor", RoutePredicate::Cursor(None)),
             None => ("thread_head", RoutePredicate::Head),
         };
-        if let RouteDecision::Replica(mut tx, entry) = self.route_read(path, predicate).await {
-            let replies = thread::get_thread_replies_on(
+        if let RouteDecision::Replica(mut tx, entry, reason) =
+            self.route_read(path, predicate).await
+        {
+            match thread::get_thread_replies_on(
                 &mut tx,
                 community_id,
                 root_event_id,
@@ -2246,21 +2289,39 @@ impl Db {
                 limit,
                 cursor,
             )
-            .await?;
-            if cursor.is_none() {
-                // Predicate A: bounded-stale head page, served as proved.
-                return Ok(replies);
+            .await
+            {
+                Ok(replies) => {
+                    if cursor.is_none() {
+                        // Predicate A: bounded-stale head page, served as proved.
+                        Self::record_route(path, "replica", reason);
+                        return Ok(replies);
+                    }
+                    let full = replies.len() >= limit as usize;
+                    let below_fence = replies
+                        .last()
+                        .is_some_and(|tail| tail.created_at <= entry.fence_wall);
+                    if full && below_fence {
+                        Self::record_route(path, "replica", reason);
+                        return Ok(replies);
+                    }
+                    // Candidate terminal page, or page reaching above the
+                    // proved wall — verify against the writer. Recorded as
+                    // the request's ONLY route event: the replica leg was
+                    // discarded, so counting it would overstate offload.
+                    Self::record_route("thread_eof", "writer", "stale");
+                }
+                Err(e) => {
+                    // Mid-request replica failure (e.g. a hot-standby
+                    // recovery conflict) fails closed to the writer.
+                    tracing::warn!(
+                        error = %e,
+                        path,
+                        "replica thread query failed; re-running on writer"
+                    );
+                    Self::record_route(path, "writer", "replica_error");
+                }
             }
-            let full = replies.len() >= limit as usize;
-            let below_fence = replies
-                .last()
-                .is_some_and(|tail| tail.created_at <= entry.fence_wall);
-            if full && below_fence {
-                return Ok(replies);
-            }
-            // Candidate terminal page, or page reaching above the proved
-            // wall — verify against the writer.
-            Self::record_route("thread_eof", "writer", "stale");
         }
         thread::get_thread_replies(
             &self.pool,
@@ -2317,7 +2378,11 @@ impl Db {
     ///   ([`DbConfig::replica_head_max_age_secs`], default off) and the
     ///   proved entry is within the budget. This trades a bounded staleness
     ///   window (budget plus probe cadence) on the GET leg for writer
-    ///   offload; the WS `since`-overlap union covers fresh events.
+    ///   offload. NOTE: enabling the budget also breaks read-your-own-writes
+    ///   on the GET leg; the client-side WS `since`-overlap union intended
+    ///   to cover fresh events has NOT shipped yet — do not enable
+    ///   `BUZZ_REPLICA_HEAD_MAX_AGE_SECS` until it has, proven by a
+    ///   post-then-immediately-refetch test.
     ///
     /// Every failure fails closed to the writer and is recorded in
     /// `buzz_db_route_decision`.
@@ -2338,41 +2403,62 @@ impl Db {
             .route_read(path, RoutePredicate::from_channel_cursor(&cursor))
             .await
         {
-            RouteDecision::Replica(mut tx, _entry) => {
-                let window = thread::get_channel_window_on(
+            RouteDecision::Replica(mut tx, _entry, reason) => {
+                match thread::get_channel_window_on(
                     &mut tx,
                     community_id,
                     channel_id,
                     limit,
-                    cursor,
+                    cursor.clone(),
                     kind_filter,
                 )
-                .await?;
-                Ok((
-                    window,
-                    ReadSession {
-                        inner: ReadSessionInner::Replica(tx),
-                    },
-                ))
+                .await
+                {
+                    Ok(window) => {
+                        Self::record_route(path, "replica", reason);
+                        return Ok((
+                            window,
+                            ReadSession {
+                                inner: ReadSessionInner::Replica {
+                                    tx,
+                                    writer: self.pool.clone(),
+                                },
+                            },
+                        ));
+                    }
+                    Err(e) => {
+                        // A mid-request replica failure (e.g. a hot-standby
+                        // recovery conflict cancelling the held snapshot)
+                        // fails closed to the writer: a stale-but-served
+                        // page, never an error the writer could have
+                        // answered. Dropping `tx` rolls the reader
+                        // transaction back.
+                        tracing::warn!(
+                            error = %e,
+                            path,
+                            "replica window query failed; re-running on writer"
+                        );
+                        Self::record_route(path, "writer", "replica_error");
+                    }
+                }
             }
-            RouteDecision::Writer => {
-                let window = thread::get_channel_window(
-                    &self.pool,
-                    community_id,
-                    channel_id,
-                    limit,
-                    cursor,
-                    kind_filter,
-                )
-                .await?;
-                Ok((
-                    window,
-                    ReadSession {
-                        inner: ReadSessionInner::Writer(self.pool.clone()),
-                    },
-                ))
-            }
+            RouteDecision::Writer => {}
         }
+        let window = thread::get_channel_window(
+            &self.pool,
+            community_id,
+            channel_id,
+            limit,
+            cursor,
+            kind_filter,
+        )
+        .await?;
+        Ok((
+            window,
+            ReadSession {
+                inner: ReadSessionInner::Writer(self.pool.clone()),
+            },
+        ))
     }
 
     /// Shared route decision for one read: evaluate the predicate against a
@@ -2427,8 +2513,7 @@ impl Db {
                     ),
                 };
                 if holds {
-                    Self::record_route(path, "replica", reason);
-                    RouteDecision::Replica(tx, entry)
+                    RouteDecision::Replica(tx, entry, reason)
                 } else {
                     // The session proves an older entry than the predicate
                     // needs (replication lag) — fail closed.
@@ -5895,6 +5980,244 @@ mod tests {
             "cursor page must be served by the replica"
         );
 
+        drop_scratch_db(&admin, replica, &rname).await;
+        drop_scratch_db(&admin, writer, &wname).await;
+    }
+
+    /// Fail-closed on a mid-request replica failure (Dawn, review of
+    /// 1b0aa0dfa): a replica-routed page whose query errors *after* the
+    /// proof (the live shape is a hot-standby recovery conflict — 40001 /
+    /// 25P02 — cancelling the held snapshot under `max_standby_streaming_delay`)
+    /// must be re-run on the writer and served, never surfaced as an error
+    /// the writer could have answered. Degraded capacity, never holes.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn replica_window_failure_falls_back_to_writer() {
+        let admin = PgPool::connect(&admin_url().await)
+            .await
+            .expect("connect admin");
+        let (writer, wname) = create_scratch_db(&admin, "fb_w").await;
+        let (replica, rname) = create_scratch_db(&admin, "fb_r").await;
+
+        let author = nostr::Keys::generate();
+        let community = Uuid::new_v4();
+        let channel = Uuid::new_v4();
+        seed_community_channel(&writer, community, channel, &author).await;
+        seed_community_channel(&replica, community, channel, &author).await;
+
+        let base = 1_700_000_000u64;
+        let m1 = signed_event_at(&author, "m1", base);
+        let m2 = signed_event_at(&author, "m2", base + 10);
+        let m3 = signed_event_at(&author, "m3", base + 20);
+        for pool in [&writer, &replica] {
+            for ev in [&m1, &m2, &m3] {
+                insert_top_level(pool, community, channel, ev).await;
+            }
+        }
+        let marker = signed_event_at(&author, "replica-only-marker", base + 5);
+        insert_top_level(&replica, community, channel, &marker).await;
+
+        let db = Db::from_pools(writer.clone(), replica.clone());
+        db.fence().force_open_for_tests(chrono::Utc::now());
+        let cid = CommunityId::from_uuid(community);
+
+        let head = db
+            .get_channel_window(cid, channel, 1, None, None)
+            .await
+            .expect("head window");
+        let cursor = head.next_cursor.expect("has_more implies next_cursor");
+
+        // Guard against a vacuous pass: the cursor page must actually be
+        // replica-eligible before we break the replica.
+        let healthy = db
+            .get_channel_window(cid, channel, 10, Some(cursor.clone()), None)
+            .await
+            .expect("healthy cursor window");
+        assert!(
+            healthy
+                .rows
+                .iter()
+                .any(|r| r.stored_event.event.content == "replica-only-marker"),
+            "fixture must route the cursor page to the replica while healthy"
+        );
+
+        // Break the replica AFTER the proof point: the heartbeat table stays
+        // intact (the observation succeeds), the page query then fails.
+        sqlx::query("DROP TABLE events CASCADE")
+            .execute(&replica)
+            .await
+            .expect("drop replica events");
+
+        let page = db
+            .get_channel_window(cid, channel, 10, Some(cursor), None)
+            .await
+            .expect("replica failure must fall back to the writer, not error");
+        let contents: Vec<&str> = page
+            .rows
+            .iter()
+            .map(|r| r.stored_event.event.content.as_str())
+            .collect();
+        assert_eq!(
+            contents,
+            vec!["m2", "m1"],
+            "fallback page must be the writer's answer (no replica marker)"
+        );
+
+        drop_scratch_db(&admin, replica, &rname).await;
+        drop_scratch_db(&admin, writer, &wname).await;
+    }
+
+    /// [`replica_window_failure_falls_back_to_writer`] for the thread-replies
+    /// path: a replica-routed thread page whose query errors after the proof
+    /// re-runs on the writer instead of surfacing an error.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn replica_thread_failure_falls_back_to_writer() {
+        let admin = PgPool::connect(&admin_url().await)
+            .await
+            .expect("connect admin");
+        let (writer, wname) = create_scratch_db(&admin, "fbt_w").await;
+        let (replica, rname) = create_scratch_db(&admin, "fbt_r").await;
+
+        let author = nostr::Keys::generate();
+        let community = Uuid::new_v4();
+        let channel = Uuid::new_v4();
+        seed_community_channel(&writer, community, channel, &author).await;
+        seed_community_channel(&replica, community, channel, &author).await;
+
+        let base = 1_700_000_000u64;
+        let root = signed_event_at(&author, "root", base);
+        for pool in [&writer, &replica] {
+            insert_top_level(pool, community, channel, &root).await;
+        }
+        let replies: Vec<nostr::Event> = (1..=3)
+            .map(|i| signed_event_at(&author, &format!("r{i}"), base + 10 * i as u64))
+            .collect();
+        for pool in [&writer, &replica] {
+            for reply in &replies {
+                insert_thread_reply(pool, community, channel, &root, reply).await;
+            }
+        }
+        // Replica-only divergent reply between r2 and r3 marks replica serves.
+        let ghost = signed_event_at(&author, "replica-only-ghost", base + 25);
+        insert_thread_reply(&replica, community, channel, &root, &ghost).await;
+
+        let db = Db::from_pools(writer.clone(), replica.clone());
+        db.fence().force_open_for_tests(chrono::Utc::now());
+        let cid = CommunityId::from_uuid(community);
+
+        let page1 = db
+            .get_thread_replies(cid, root.id.as_bytes(), Some(10), 2, None)
+            .await
+            .expect("head page");
+        let cur = thread_cursor(page1.last().expect("page 1 non-empty"));
+
+        // Healthy: the full page after r2 is the replica's [ghost].
+        let healthy = db
+            .get_thread_replies(cid, root.id.as_bytes(), Some(10), 1, Some(&cur))
+            .await
+            .expect("healthy replica page");
+        assert_eq!(
+            healthy[0].stored_event.event.content, "replica-only-ghost",
+            "fixture must route the cursor page to the replica while healthy"
+        );
+
+        sqlx::query("DROP TABLE events CASCADE")
+            .execute(&replica)
+            .await
+            .expect("drop replica events");
+
+        let page = db
+            .get_thread_replies(cid, root.id.as_bytes(), Some(10), 1, Some(&cur))
+            .await
+            .expect("replica failure must fall back to the writer, not error");
+        assert_eq!(
+            page[0].stored_event.event.content, "r3",
+            "fallback page must be the writer's answer"
+        );
+
+        drop_scratch_db(&admin, replica, &rname).await;
+        drop_scratch_db(&admin, writer, &wname).await;
+    }
+
+    /// Mid-request degradation of the held session (Dawn, review of
+    /// 1b0aa0dfa): when the proved replica transaction dies between the page
+    /// and an aux follow-up (stand-in: `pg_terminate_backend` on the reader
+    /// connection, the same tx-fatal shape as a recovery-conflict cancel),
+    /// [`ReadSession::query_events`] must re-run the query on the writer and
+    /// permanently degrade the session instead of surfacing the error.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn read_session_degrades_to_writer_when_replica_connection_dies() {
+        let admin = PgPool::connect(&admin_url().await)
+            .await
+            .expect("connect admin");
+        let (writer, wname) = create_scratch_db(&admin, "deg_w").await;
+        let (replica, rname) = create_scratch_db(&admin, "deg_r").await;
+
+        let author = nostr::Keys::generate();
+        let community = Uuid::new_v4();
+        let channel = Uuid::new_v4();
+        seed_community_channel(&writer, community, channel, &author).await;
+        seed_community_channel(&replica, community, channel, &author).await;
+
+        let base = 1_700_000_000u64;
+        let m1 = signed_event_at(&author, "m1", base);
+        let m2 = signed_event_at(&author, "m2", base + 10);
+        for pool in [&writer, &replica] {
+            for ev in [&m1, &m2] {
+                insert_top_level(pool, community, channel, ev).await;
+            }
+        }
+        // Writer-only row proves the degraded aux ran on the writer.
+        let fresh = signed_event_at(&author, "fresh-writer-only", base + 20);
+        insert_top_level(&writer, community, channel, &fresh).await;
+
+        let db = Db::from_pools(writer.clone(), replica.clone());
+        db.fence().force_open_for_tests(chrono::Utc::now());
+        let cid = CommunityId::from_uuid(community);
+
+        let head = db
+            .get_channel_window(cid, channel, 1, None, None)
+            .await
+            .expect("head window");
+        let cursor = head.next_cursor.expect("has_more implies next_cursor");
+        let (_window, mut session) = db
+            .get_channel_window_with_session(cid, channel, 10, Some(cursor), None)
+            .await
+            .expect("routed cursor window");
+        assert!(
+            session.is_replica(),
+            "fixture must route this page to the replica"
+        );
+
+        // Kill the reader's backend out from under the held transaction.
+        sqlx::query(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+             WHERE datname = $1 AND pid <> pg_backend_pid()",
+        )
+        .bind(&rname)
+        .execute(&admin)
+        .await
+        .expect("terminate replica backends");
+
+        let mut aux = EventQuery::for_community(cid);
+        aux.channel_id = Some(channel);
+        let rows = session
+            .query_events(&aux)
+            .await
+            .expect("session must degrade to the writer, not error");
+        assert!(
+            rows.iter()
+                .any(|se| se.event.content == "fresh-writer-only"),
+            "degraded aux must be served by the writer"
+        );
+        assert!(
+            !session.is_replica(),
+            "the session must be permanently degraded to the writer"
+        );
+
+        drop(session);
         drop_scratch_db(&admin, replica, &rname).await;
         drop_scratch_db(&admin, writer, &wname).await;
     }
