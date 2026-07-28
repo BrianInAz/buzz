@@ -302,11 +302,7 @@ fn stt_worker(
         // Track TTS transitions to set the cooldown timer.
         let tts_now = tts_active.load(Ordering::Acquire);
         let tts_is_synthesizing = tts_synthesizing.load(Ordering::Acquire);
-        if tts_is_synthesizing {
-            // A drained decoder block is a synthesis gap, not the end of the
-            // utterance. Keep microphone input live without applying cooldown.
-            tts_stopped_at = None;
-        } else if tts_playback_ended(tts_was_active, tts_now, tts_is_synthesizing) {
+        if tts_playback_ended(tts_was_active, tts_now, tts_is_synthesizing) {
             // TTS just stopped — record the timestamp for the cooldown window.
             tts_stopped_at = Some(std::time::Instant::now());
         }
