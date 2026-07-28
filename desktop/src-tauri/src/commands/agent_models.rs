@@ -231,8 +231,8 @@ fn agent_model_discovery_config(
 
 /// Derive the discovery env for an unsaved ("draft") agent configuration.
 ///
-/// Mirrors the layering `saved_agent_model_discovery_config` performs for a
-/// persisted record, but sources the provider from form input: runtime-derived
+/// Mirrors the layering `agent_model_discovery_config` takes from the harness
+/// descriptor, but sources the provider from form input: runtime-derived
 /// provider env var → definition env → user env vars, so user overrides always
 /// win. Extracted so the draft path has the same tested seam as the saved one.
 fn draft_agent_model_discovery_env(

@@ -779,9 +779,9 @@ fn openrouter_saved_agent_model_discovery_resolves_provider() {
 
 /// B5/T4: unsaved-agent ("draft") discovery mirrors the saved-agent path —
 /// `draft_agent_model_discovery_env` must derive the provider env var from
-/// form input the same way `saved_agent_model_discovery_config` derives it
-/// from a persisted record, and preserve caller-supplied env (including the
-/// OpenRouter API key) unmodified.
+/// form input the same way `agent_model_discovery_config` derives it from a
+/// persisted record's harness descriptor, and preserve caller-supplied env
+/// (including the OpenRouter API key) unmodified.
 #[test]
 fn openrouter_draft_agent_model_discovery_derives_provider_env() {
     let env_vars = BTreeMap::from([(
@@ -816,4 +816,68 @@ fn draft_agent_model_discovery_env_omits_provider_when_absent() {
         !merged.contains_key("BUZZ_AGENT_PROVIDER"),
         "no provider must be derived when the caller supplies none"
     );
+}
+
+/// The three-tier precedence this merge exists to preserve: main's inline
+/// `derived → definition_env → env_vars` layering was folded into
+/// `draft_agent_model_discovery_env`, so pin the order at every collision
+/// boundary rather than trusting the two single-tier tests above.
+///
+/// `SHARED` collides across all three tiers, so the user value proves the
+/// full chain; the pairwise keys prove each adjacent boundary independently
+/// (a merge that dropped only the middle tier would still satisfy `SHARED`).
+/// `BUZZ_PRIVATE_KEY` proves a reserved key cannot ride in on a harness
+/// definition, which is the tier a user never types.
+#[test]
+fn draft_agent_model_discovery_env_layers_all_three_tiers_in_order() {
+    // Tier 2 (middle): harness definition env — overlays the runtime-derived
+    // floor, loses to user env.
+    let definition_env = BTreeMap::from([
+        ("SHARED".to_string(), "from-definition".to_string()),
+        // Collides with tier 1: `buzz-agent`'s own provider env var, which the
+        // `provider` argument derives below.
+        ("BUZZ_AGENT_PROVIDER".to_string(), "openai".to_string()),
+        ("USER_OVER_DEF".to_string(), "from-definition".to_string()),
+        ("DEFINITION_ONLY".to_string(), "from-definition".to_string()),
+        // Reserved: must never reach the child, even from a definition.
+        ("BUZZ_PRIVATE_KEY".to_string(), "must-not-leak".to_string()),
+    ]);
+    // Tier 3 (top): user-entered env — wins over everything.
+    let env_vars = BTreeMap::from([
+        ("SHARED".to_string(), "from-user".to_string()),
+        ("USER_OVER_DEF".to_string(), "from-user".to_string()),
+        ("USER_ONLY".to_string(), "from-user".to_string()),
+    ]);
+
+    // Tier 1 (floor): `Some("openrouter")` derives BUZZ_AGENT_PROVIDER.
+    let merged = draft_agent_model_discovery_env(
+        "buzz-agent",
+        Some("openrouter"),
+        &definition_env,
+        &env_vars,
+    );
+
+    let expected: &[(&str, Option<&str>)] = &[
+        // Collides in all three tiers — the top tier wins.
+        ("SHARED", Some("from-user")),
+        // Tier 2 over tier 1: the definition's value survives, proving the
+        // derived provider is the floor and not layered on top.
+        ("BUZZ_AGENT_PROVIDER", Some("openai")),
+        // Tier 3 over tier 2.
+        ("USER_OVER_DEF", Some("from-user")),
+        // Single-tier keys pass through untouched.
+        ("DEFINITION_ONLY", Some("from-definition")),
+        ("USER_ONLY", Some("from-user")),
+        // Reserved keys never survive the definition tier. Doubly enforced —
+        // the explicit `is_reserved_env_key` filter here and `merged_user_env`'s
+        // own `retain` — so this pins the contract, not either mechanism.
+        ("BUZZ_PRIVATE_KEY", None),
+    ];
+    for (key, want) in expected {
+        assert_eq!(
+            merged.get(*key).map(String::as_str),
+            *want,
+            "env key `{key}` must resolve to {want:?} after three-tier layering"
+        );
+    }
 }
