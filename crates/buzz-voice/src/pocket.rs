@@ -395,6 +395,51 @@ impl PocketTts {
     where
         F: Fn() -> bool + Send + Sync + 'static,
     {
+        let is_interrupted = Arc::new(is_interrupted);
+        if is_interrupted() {
+            return Ok(SynthesisOutcome::Interrupted);
+        }
+        let callback_predicate = Arc::clone(&is_interrupted);
+        self.synth_chunk_with_callback(text, style, move |_samples, _progress| {
+            !callback_predicate()
+        })
+    }
+
+    /// Synthesise `text` while reporting each newly decoded audio chunk.
+    ///
+    /// Pocket emits independent (not cumulative) PCM chunks, currently about
+    /// 1.2 seconds each with sherpa-onnx's default `chunk_size = 15`. The
+    /// callback runs synchronously on the synthesis thread after each Mimi
+    /// decoder pass; copying/enqueueing the slice lets playback continue
+    /// asynchronously while the next decoder pass runs. The slice is borrowed
+    /// from sherpa-onnx and is invalid after the callback returns.
+    ///
+    /// sherpa-onnx completes Pocket's latent-generation loop before the first
+    /// Mimi decoder callback. Returning `false` cancels at the next callback,
+    /// and partial output is reported as [`SynthesisOutcome::Interrupted`].
+    pub fn synth_chunk_streaming<F>(
+        &self,
+        text: &str,
+        _lang: &str,
+        style: &VoiceStyle,
+        _steps: usize,
+        callback: F,
+    ) -> Result<SynthesisOutcome, String>
+    where
+        F: FnMut(&[f32], f32) -> bool + 'static,
+    {
+        self.synth_chunk_with_callback(text, style, callback)
+    }
+
+    fn synth_chunk_with_callback<F>(
+        &self,
+        text: &str,
+        style: &VoiceStyle,
+        mut callback: F,
+    ) -> Result<SynthesisOutcome, String>
+    where
+        F: FnMut(&[f32], f32) -> bool + 'static,
+    {
         // Mirror upstream pocket-tts prompt prep — without this short or
         // unpunctuated inputs can cause the LM's EOS logit to never trip,
         // producing up to 40 s of "monster breathing" garbage on the first
@@ -403,14 +448,10 @@ impl PocketTts {
             Some(p) => p,
             None => return Ok(SynthesisOutcome::Complete(Vec::new())),
         };
-        let is_interrupted = Arc::new(is_interrupted);
-        if is_interrupted() {
-            return Ok(SynthesisOutcome::Interrupted);
-        }
 
         // Per-call generation hints sherpa-onnx forwards to
         // `offline-tts-pocket-impl.h`. We only override `max_frames`, and
-        // only for short padded prompts where we have a tight expectation
+        // only for short prompts where we have a tight expectation
         // on output length — that bounds the original runaway without
         // disturbing the rest of the LM sampling envelope. See
         // `prepare_pocket_prompt` docs for the regression history.
@@ -429,26 +470,26 @@ impl PocketTts {
 
         let callback_interrupted = Arc::new(AtomicBool::new(false));
         let callback_flag = Arc::clone(&callback_interrupted);
-        let callback_predicate = Arc::clone(&is_interrupted);
-        let audio = self
-            .inner
-            .generate_with_config(
-                &prepared.text,
-                &cfg,
-                Some(move |_samples: &[f32], _progress: f32| {
-                    let interrupted = callback_predicate();
-                    if interrupted {
-                        callback_flag.store(true, Ordering::Release);
-                    }
-                    !interrupted
-                }),
-            )
-            .ok_or_else(|| {
-                format!(
-                    "Pocket TTS synthesis failed for text ({} chars)",
-                    prepared.text.len()
-                )
-            })?;
+        let audio = self.inner.generate_with_config(
+            &prepared.text,
+            &cfg,
+            Some(move |samples: &[f32], progress: f32| {
+                let keep_going = callback(samples, progress);
+                if !keep_going {
+                    callback_flag.store(true, Ordering::Release);
+                }
+                keep_going
+            }),
+        );
+        let Some(audio) = audio else {
+            if callback_interrupted.load(Ordering::Acquire) {
+                return Ok(SynthesisOutcome::Interrupted);
+            }
+            return Err(format!(
+                "Pocket TTS synthesis failed for text ({} chars)",
+                prepared.text.len()
+            ));
+        };
 
         let sample_rate = audio.sample_rate();
         if sample_rate != SAMPLE_RATE as i32 {
@@ -458,7 +499,7 @@ impl PocketTts {
             );
         }
 
-        if callback_interrupted.load(Ordering::Acquire) || is_interrupted() {
+        if callback_interrupted.load(Ordering::Acquire) {
             Ok(SynthesisOutcome::Interrupted)
         } else {
             Ok(SynthesisOutcome::Complete(audio.samples().to_vec()))
