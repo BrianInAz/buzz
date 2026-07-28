@@ -47,9 +47,7 @@ use std::{
     time::Duration,
 };
 
-use super::playback_speed::{
-    process_complete_chunk_preserving_lead_in, PlaybackSpeedControl,
-};
+use super::playback_speed::{process_complete_chunk_preserving_lead_in, PlaybackSpeedControl};
 use super::pocket::{
     load_text_to_speech, load_voice_style, SynthesisOutcome, SAMPLE_RATE, VOICE_FILE_EXT,
 };
