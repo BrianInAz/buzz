@@ -73,8 +73,8 @@ impl PocketStreamAssembler {
         Ok(())
     }
 
-    /// Queue the retained final suffix, or the complete waveform when an older
-    /// sherpa-onnx build produced no callbacks.
+    /// Queue the retained final suffix, or the complete waveform when the
+    /// synthesis backend produced no progress callbacks.
     pub(super) fn finish<F>(
         &mut self,
         complete_samples: &[f32],

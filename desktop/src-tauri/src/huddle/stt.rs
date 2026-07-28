@@ -205,6 +205,10 @@ const TTS_COOLDOWN: Duration = Duration::from_millis(50);
 /// shows it's safe on the minimum-spec target.
 const STT_NUM_THREADS: i32 = 1;
 
+fn tts_playback_ended(was_active: bool, is_active: bool, is_synthesizing: bool) -> bool {
+    was_active && !is_active && !is_synthesizing
+}
+
 fn stt_worker(
     model_dir: PathBuf,
     audio_rx: Receiver<Vec<u8>>,
@@ -297,7 +301,12 @@ fn stt_worker(
 
         // Track TTS transitions to set the cooldown timer.
         let tts_now = tts_active.load(Ordering::Acquire);
-        if tts_was_active && !tts_now {
+        let tts_is_synthesizing = tts_synthesizing.load(Ordering::Acquire);
+        if tts_is_synthesizing {
+            // A drained decoder block is a synthesis gap, not the end of the
+            // utterance. Keep microphone input live without applying cooldown.
+            tts_stopped_at = None;
+        } else if tts_playback_ended(tts_was_active, tts_now, tts_is_synthesizing) {
             // TTS just stopped — record the timestamp for the cooldown window.
             tts_stopped_at = Some(std::time::Instant::now());
         }
@@ -583,3 +592,18 @@ fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
 
 // drain_until_shutdown lives in super (huddle/mod.rs) — shared with tts.rs.
 use super::drain_until_shutdown;
+
+#[cfg(test)]
+mod tests {
+    use super::tts_playback_ended;
+
+    #[test]
+    fn decoder_gap_is_not_a_playback_end() {
+        assert!(!tts_playback_ended(true, false, true));
+    }
+
+    #[test]
+    fn drained_completed_stream_is_a_playback_end() {
+        assert!(tts_playback_ended(true, false, false));
+    }
+}

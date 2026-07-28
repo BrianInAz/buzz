@@ -551,7 +551,7 @@ pub async fn preview_pocket_voice(
         let pipeline = super::tts::TtsPipeline::new_with_voice(
             model_dir,
             active.clone(),
-            synthesizing,
+            synthesizing.clone(),
             cancel,
             &voice_name,
             output_device,
@@ -561,8 +561,9 @@ pub async fn preview_pocket_voice(
         let mut heard_audio = false;
         while started.elapsed() < std::time::Duration::from_secs(30) {
             let is_active = active.load(std::sync::atomic::Ordering::Acquire);
+            let is_synthesizing = synthesizing.load(std::sync::atomic::Ordering::Acquire);
             heard_audio |= is_active;
-            if heard_audio && !is_active {
+            if voice_preview_finished(heard_audio, is_active, is_synthesizing) {
                 return Ok(());
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
@@ -571,6 +572,10 @@ pub async fn preview_pocket_voice(
     })
     .await
     .map_err(|error| format!("Voice preview task failed: {error}"))?
+}
+
+fn voice_preview_finished(heard_audio: bool, is_active: bool, is_synthesizing: bool) -> bool {
+    heard_audio && !is_active && !is_synthesizing
 }
 
 #[cfg(test)]
@@ -619,6 +624,12 @@ mod tests {
 
         assert!(enable_tts_runtime(&mut huddle, "reference_sample").is_none());
         assert!(cancel.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn voice_preview_waits_across_a_streaming_gap() {
+        assert!(!voice_preview_finished(true, false, true));
+        assert!(voice_preview_finished(true, false, false));
     }
 
     #[test]
