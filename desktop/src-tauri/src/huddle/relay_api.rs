@@ -12,11 +12,12 @@
 
 use futures_util::{SinkExt, StreamExt};
 use std::sync::{atomic::AtomicBool, Arc};
-use tokio_tungstenite::{connect_async, tungstenite::Message as WsMsg};
+use tokio_tungstenite::tungstenite::Message as WsMsg;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::app_state::AppState;
+use crate::native_websocket::connect_async_with_platform_tls;
 use crate::relay::query_relay;
 
 /// Maximum number of agents that can be invited to a single huddle.
@@ -65,7 +66,7 @@ pub(crate) async fn connect_audio_relay(
 
     let app_handle = state.app_handle.lock().ok().and_then(|g| g.clone());
 
-    let (ws_stream, _) = connect_async(&ws_url)
+    let (ws_stream, _) = connect_async_with_platform_tls(&ws_url)
         .await
         .map_err(|e| format!("audio WS connect failed: {e}"))?;
     let (mut ws_tx, mut ws_rx) = ws_stream.split();

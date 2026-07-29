@@ -1,12 +1,15 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
+use rustls_platform_verifier::ConfigVerifierExt;
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, plugin::TauriPlugin, Manager, Runtime};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::{
-    connect_async,
+    connect_async_tls_with_config,
+    tungstenite::handshake::client::Response,
     tungstenite::protocol::{frame::coding::CloseCode, CloseFrame, Message},
+    Connector, MaybeTlsStream, WebSocketStream,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -18,6 +21,28 @@ const SEND_QUEUE_CAPACITY: usize = 64;
 pub(crate) fn install_crypto_provider() {
     // Dependencies enable both rustls providers; choose one before TLS setup.
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+}
+
+fn platform_tls_connector() -> Result<Connector, String> {
+    install_crypto_provider();
+    let config = rustls::ClientConfig::with_platform_verifier()
+        .map_err(|error| format!("failed to configure platform TLS verifier: {error}"))?;
+    Ok(Connector::Rustls(Arc::new(config)))
+}
+
+pub(crate) async fn connect_async_with_platform_tls(
+    url: &str,
+) -> Result<
+    (
+        WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+        Response,
+    ),
+    String,
+> {
+    let connector = platform_tls_connector()?;
+    connect_async_tls_with_config(url, None, false, Some(connector))
+        .await
+        .map_err(|error| error.to_string())
 }
 
 type Id = u32;
@@ -129,9 +154,9 @@ async fn open_connection(
     let connect_cancel = manager.connect_cancel.lock().await.clone();
     let (socket, _) = tokio::select! {
         _ = connect_cancel.cancelled() => return Err("WebSocket connection cancelled".to_string()),
-        result = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(url)) => result
+        result = tokio::time::timeout(CONNECT_TIMEOUT, connect_async_with_platform_tls(url)) => result
             .map_err(|_| "WebSocket connection timed out".to_string())?
-            .map_err(|error| error.to_string())?,
+            ?,
     };
 
     // Serialize registration with disconnect_all so a reload cannot miss a
@@ -331,10 +356,33 @@ mod tests {
 
     use tauri::ipc::InvokeResponseBody;
     use tokio::io::duplex;
-    use tokio_tungstenite::{tungstenite::protocol::Role, WebSocketStream};
+    use tokio_tungstenite::tungstenite::protocol::Role;
 
     fn silent_channel() -> Channel<serde_json::Value> {
         Channel::new(|_: InvokeResponseBody| Ok(()))
+    }
+
+    #[test]
+    fn native_websocket_platform_tls_connector_is_available() {
+        install_crypto_provider();
+        assert!(
+            platform_tls_connector().is_ok(),
+            "native WebSockets must use the operating system trust store"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires BUZZ_TEST_WSS_URL and network access"]
+    async fn platform_tls_connects_to_configured_wss() {
+        let url = std::env::var("BUZZ_TEST_WSS_URL")
+            .expect("BUZZ_TEST_WSS_URL must name the WSS endpoint to verify");
+        tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            connect_async_with_platform_tls(url.as_str()),
+        )
+        .await
+        .expect("configured WSS endpoint should complete before the connection timeout")
+        .expect("configured WSS endpoint should trust the platform certificate store");
     }
 
     #[tokio::test]
@@ -346,11 +394,10 @@ mod tests {
             let (_stream, _) = listener.accept().await.unwrap();
             tokio::time::sleep(Duration::from_millis(100)).await;
         });
-        let result = std::panic::AssertUnwindSafe(tokio_tungstenite::connect_async(format!(
-            "wss://{address}"
-        )))
-        .catch_unwind()
-        .await;
+        let url = format!("wss://{address}");
+        let result = std::panic::AssertUnwindSafe(connect_async_with_platform_tls(&url))
+            .catch_unwind()
+            .await;
 
         assert!(result.is_ok(), "TLS setup must not panic");
         server.await.unwrap();
