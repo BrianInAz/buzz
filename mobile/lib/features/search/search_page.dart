@@ -93,10 +93,12 @@ class SearchPage extends HookConsumerWidget {
     }
 
     return FrostedScaffold(
+      backgroundColor: Colors.transparent,
       // Keep the empty state centered in the page rather than the portion left
       // above the keyboard.
       resizeToAvoidBottomInset: false,
       appBar: FrostedAppBar(
+        automaticallyImplyLeading: false,
         gradient: context.appColors.topSectionGradient,
         title: const Text('Search'),
         titleStyle: headerTitleStyle,
