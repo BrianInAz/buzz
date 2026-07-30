@@ -106,34 +106,30 @@ text never become command input. `skip` closes the ticket without a build. A
 conflict or failed preflight applies `remediation-required` and publishes no
 package.
 
-## Hosted validation and package
+## Hosted validation and local package
 
-Standard GitHub-hosted runners are used for bounded, reproducible work. They
-are currently unmetered for this public repository, but concurrency, queueing,
-cache, artifact, and fair-use limits still apply. Larger billable runners are
-not used.
+Standard GitHub-hosted Ubuntu runners are used for bounded, reproducible source
+validation. GitHub-hosted macOS and Windows runners are not used. The approved
+local Mac performs the package step after remote validation succeeds.
 
 The approved build has three gates:
 
 1. Ubuntu checks out the exact upstream tag, applies the pinned patch without
    committing it, then runs formatting, Clippy, focused connector tests, and
    `just ci`.
-2. macOS arm64 runs a hermetic platform-trust test. It creates a disposable CA
-   and localhost WSS server, proves the connection fails before trust is added,
-   succeeds after adding that CA to a temporary macOS keychain, then removes
-   all temporary trust material. It covers primary, pairing, and huddle paths.
-3. macOS arm64 packages the exact source using existing upstream sidecar and
+2. The approved local Apple Silicon Mac runs the platform-trust and private WSS
+   gates before installation; no identity key is supplied to either gate.
+3. The same local Mac runs `scripts/build-private-ca-macos.sh` with the ticket's
+   immutable tag and SHA. It uses existing upstream sidecar and
    Tauri conventions. The package has no updater keys, no notarization, no
    Apple Developer signing identity, and no private infrastructure values.
    The updater remains disabled. The app is ad-hoc signed and verified before
    the DMG is rebuilt.
 
-Publish a fork prerelease named `buzz-private-ca-vX.Y.Z-rN`, never the general
-latest release. Include the arm64 DMG, SHA256SUMS, applied patch, test summary,
-and a manifest containing upstream tag/SHA, patch SHA, result tree SHA, tool
-versions, runner architecture, and workflow URL. Add a GitHub build-provenance
-attestation. Durable packages belong in the prerelease, not a short-lived
-Actions artifact.
+The local helper writes the arm64 DMG, SHA256SUMS, applied patch, and a manifest
+to `dist/private-ca/<tag>/`. Publish it as a fork prerelease only after the
+private WSS gate and local acceptance are green; it is never the general
+latest release.
 
 ## Private WSS gate
 
