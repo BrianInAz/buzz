@@ -152,6 +152,15 @@ jobs:
       - name: Run full upstream CI
         working-directory: ${{ runner.temp }}/source
         run: just ci
+      - name: Stub Tauri sidecar binaries for test compilation
+        working-directory: ${{ runner.temp }}/source
+        run: |
+          set -euo pipefail
+          host_triple="$(rustc -vV | sed -n 's/^host: //p')"
+          mkdir -p desktop/src-tauri/binaries
+          for sidecar in buzz-acp buzz-agent buzz-dev-mcp git-credential-nostr buzz; do
+            touch "desktop/src-tauri/binaries/${sidecar}-${host_triple}"
+          done
       - name: Run focused native connector test
         working-directory: ${{ runner.temp }}/source
         run: cargo test --manifest-path desktop/src-tauri/Cargo.toml native_websocket::tests::native_websocket_platform_tls_connector_is_available
