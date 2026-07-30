@@ -1,0 +1,225 @@
+---
+# yamllint disable rule:line-length
+# yamllint disable rule:comments
+name: Private CA Desktop Release
+
+"on":
+  schedule:
+    - cron: "5 15 * * *"
+  workflow_dispatch:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-ca-release-${{ github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: block/buzz
+  PATCH_COMMIT: 6d03a38da5e3402bf97df1b3c46152887eb3778e
+
+jobs:
+  monitor:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Create one BUILD or SKIP ticket
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release="$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest")"
+          tag="$(jq -r '.tag_name' <<<"${release}")"
+          [[ "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a stable tag: ${tag}" >&2; exit 1; }
+          existing="$(gh issue list --state all --search "[Buzz update] ${tag} available in:title" --json number --jq '.[0].number // empty')"
+          [[ -z "${existing}" ]] || { echo "ticket already exists: #${existing}"; exit 0; }
+          work="$(mktemp -d)"; trap 'rm -rf "${work}"' EXIT
+          git clone --depth 1 --branch "${tag}" "https://github.com/${UPSTREAM_REPOSITORY}.git" "${work}/source"
+          source_sha="$(git -C "${work}/source" rev-parse HEAD)"
+          git -C "${work}/source" fetch --depth 2 "https://github.com/${GITHUB_REPOSITORY}.git" "${PATCH_COMMIT}"
+          if git -C "${work}/source" cherry-pick --no-commit "${PATCH_COMMIT}"; then
+            patch_status=clean
+            git -C "${work}/source" cherry-pick --abort || git -C "${work}/source" reset --hard
+          else
+            patch_status=conflict
+            git -C "${work}/source" cherry-pick --abort || git -C "${work}/source" reset --hard
+          fi
+          for label in buzz-update build-approved skip remediation-required built accepted; do
+            gh label create "${label}" --force --color 0E8A16 --description "Buzz private-CA release lifecycle" >/dev/null
+          done
+          cat >"${work}/issue.md" <<EOF
+          <!-- buzz-private-ca-release tag=${tag} source_sha=${source_sha} patch_sha=${PATCH_COMMIT} patch_status=${patch_status} -->
+          ## Buzz ${tag} is available
+
+          Upstream release: $(jq -r '.html_url' <<<"${release}")
+          Published: $(jq -r '.published_at' <<<"${release}")
+          Immutable source SHA: \`${source_sha}\`
+          Patch applicability: **${patch_status}**
+
+          ### Changelog
+
+          $(jq -r '.body // "No upstream release notes supplied."' <<<"${release}")
+
+          ### Decision required
+
+          - Add \`build-approved\` to start the guarded arm64 build. Only @BrianInAz can approve.
+          - Add \`skip\` and close this issue to record no build is wanted.
+          - If applicability is \`conflict\`, use \`remediation-required\`; do not approve.
+          EOF
+          labels=(--label buzz-update)
+          if [[ "${patch_status}" == conflict ]]; then
+            labels+=(--label remediation-required)
+          fi
+          gh issue create --title "[Buzz update] ${tag} available" "${labels[@]}" --body-file "${work}/issue.md"
+
+  skip:
+    if: >-
+      github.event_name == 'issues' && github.event.action == 'labeled' &&
+      github.event.label.name == 'skip' && github.actor == 'BrianInAz'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Record the explicit no-build decision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh issue comment "${{ github.event.issue.number }}" --body "Skipped by @BrianInAz; no private-CA package was built."
+          gh issue close "${{ github.event.issue.number }}"
+
+  approval:
+    if: >-
+      github.event_name == 'issues' && github.event.action == 'labeled' &&
+      github.event.label.name == 'build-approved' && github.actor == 'BrianInAz'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      issue_number: ${{ steps.verify.outputs.issue_number }}
+      tag: ${{ steps.verify.outputs.tag }}
+      source_sha: ${{ steps.verify.outputs.source_sha }}
+    steps:
+      - id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          body="$(gh issue view "${ISSUE_NUMBER}" --json body --jq .body)"
+          marker="$(grep -E '^<!-- buzz-private-ca-release tag=v[0-9]+\.[0-9]+\.[0-9]+ source_sha=[0-9a-f]{40} patch_sha=[0-9a-f]{40} patch_status=clean -->$' <<<"${body}")"
+          [[ -n "${marker}" ]] || { echo "not a clean monitor-created ticket" >&2; exit 1; }
+          tag="$(sed -E 's/.*tag=([^ ]+).*/\1/' <<<"${marker}")"
+          source_sha="$(sed -E 's/.*source_sha=([^ ]+).*/\1/' <<<"${marker}")"
+          patch_sha="$(sed -E 's/.*patch_sha=([^ ]+).*/\1/' <<<"${marker}")"
+          [[ "${patch_sha}" == "${PATCH_COMMIT}" ]] || { echo "wrong patch" >&2; exit 1; }
+          remote_sha="$(git ls-remote "https://github.com/${UPSTREAM_REPOSITORY}.git" "refs/tags/${tag}^{}" | awk '{print $1}')"
+          [[ -n "${remote_sha}" ]] || remote_sha="$(git ls-remote "https://github.com/${UPSTREAM_REPOSITORY}.git" "refs/tags/${tag}" | awk '{print $1}')"
+          [[ "${remote_sha}" == "${source_sha}" ]] || { echo "tag SHA changed" >&2; exit 1; }
+          echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
+
+  validate:
+    needs: approval
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Fetch immutable source and apply patch
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${{ needs.approval.outputs.tag }}" "https://github.com/${UPSTREAM_REPOSITORY}.git" "$RUNNER_TEMP/source"
+          [[ "$(git -C "$RUNNER_TEMP/source" rev-parse HEAD)" == "${{ needs.approval.outputs.source_sha }}" ]]
+          git -C "$RUNNER_TEMP/source" fetch --depth 2 "https://github.com/${GITHUB_REPOSITORY}.git" "${PATCH_COMMIT}"
+          git -C "$RUNNER_TEMP/source" cherry-pick --no-commit "${PATCH_COMMIT}"
+          git -C "$RUNNER_TEMP/source" diff --check
+      - name: Run full upstream CI
+        working-directory: ${{ runner.temp }}/source
+        run: just ci
+      - name: Run focused native connector test
+        working-directory: ${{ runner.temp }}/source
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml native_websocket::tests::native_websocket_platform_tls_connector_is_available
+
+  package:
+    needs: [approval, validate]
+    runs-on: macos-15
+    timeout-minutes: 75
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Fetch immutable source and apply patch
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${{ needs.approval.outputs.tag }}" "https://github.com/${UPSTREAM_REPOSITORY}.git" "$RUNNER_TEMP/source"
+          [[ "$(git -C "$RUNNER_TEMP/source" rev-parse HEAD)" == "${{ needs.approval.outputs.source_sha }}" ]]
+          git -C "$RUNNER_TEMP/source" fetch --depth 2 "https://github.com/${GITHUB_REPOSITORY}.git" "${PATCH_COMMIT}"
+          git -C "$RUNNER_TEMP/source" cherry-pick --no-commit "${PATCH_COMMIT}"
+      - name: Run macOS platform connector test
+        working-directory: ${{ runner.temp }}/source
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml native_websocket::tests::native_websocket_platform_tls_connector_is_available
+      - name: Install desktop dependencies
+        working-directory: ${{ runner.temp }}/source
+        run: just desktop-install-ci
+      - name: Build without updater artifacts or upstream signing
+        working-directory: ${{ runner.temp }}/source
+        run: |
+          set -euo pipefail
+          cat > desktop/src-tauri/tauri.private-ca.conf.json <<'EOF'
+          { "bundle": { "macOS": { "minimumSystemVersion": "10.15" }, "createUpdaterArtifacts": false } }
+          EOF
+          cd desktop
+          pnpm tauri build --verbose --no-sign --features mesh-llm --config src-tauri/tauri.private-ca.conf.json
+      - name: Ad-hoc sign and rebuild the arm64 DMG
+        working-directory: ${{ runner.temp }}/source
+        run: |
+          set -euo pipefail
+          app_path="desktop/src-tauri/target/release/bundle/macos/Buzz.app"
+          mkdir -p "$RUNNER_TEMP/release/dmg-root"
+          codesign --force --deep --sign - "${app_path}"
+          codesign --verify --deep --strict --verbose=2 "${app_path}"
+          cp -R "${app_path}" "$RUNNER_TEMP/release/dmg-root/Buzz.app"
+          hdiutil create -volname Buzz -srcfolder "$RUNNER_TEMP/release/dmg-root" -ov -format UDZO "$RUNNER_TEMP/release/Buzz-${{ needs.approval.outputs.tag }}-private-ca-arm64.dmg"
+      - name: Create manifest, patch, and checksums
+        working-directory: ${{ runner.temp }}/source
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/release/manifest.json" <<EOF
+          {"upstream_tag":"${{ needs.approval.outputs.tag }}","upstream_sha":"${{ needs.approval.outputs.source_sha }}","patch_sha":"${PATCH_COMMIT}","result_tree_sha":"$(git write-tree)","runner_architecture":"$(uname -m)","workflow_url":"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"}
+          EOF
+          git diff --binary "${{ needs.approval.outputs.source_sha }}" > "$RUNNER_TEMP/release/private-ca.patch"
+          (cd "$RUNNER_TEMP/release" && shasum -a 256 *.dmg manifest.json private-ca.patch > SHA256SUMS)
+          printf '%s\n' '# Private-CA build test summary' '- upstream tag and SHA verified' '- just ci and focused connector test passed on Ubuntu' '- macOS platform connector test passed' '- ad-hoc signed DMG with updater disabled' > "$RUNNER_TEMP/release/TEST-SUMMARY.md"
+      - name: Attest the DMG
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/release/*.dmg
+      - name: Publish fork prerelease and mark ticket built
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_tag="buzz-private-ca-${{ needs.approval.outputs.tag }}-r${GITHUB_RUN_NUMBER}"
+          gh release create "${release_tag}" "$RUNNER_TEMP/release/Buzz-${{ needs.approval.outputs.tag }}-private-ca-arm64.dmg" "$RUNNER_TEMP/release/SHA256SUMS" "$RUNNER_TEMP/release/manifest.json" "$RUNNER_TEMP/release/private-ca.patch" "$RUNNER_TEMP/release/TEST-SUMMARY.md" --prerelease --title "Buzz private-CA ${release_tag}" --notes "Built from ${{ needs.approval.outputs.tag }} at ${{ needs.approval.outputs.source_sha }} with patch ${PATCH_COMMIT}."
+          gh issue edit "${{ needs.approval.outputs.issue_number }}" --add-label built
+          gh issue comment "${{ needs.approval.outputs.issue_number }}" --body "Fork prerelease published: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${release_tag}"
