@@ -12,7 +12,7 @@ fi
 
 require() {
   local expected="$1"
-  if ! rg --fixed-strings --quiet -- "${expected}" "${workflow}"; then
+  if ! grep -F -q -- "${expected}" "${workflow}"; then
     echo "${workflow} must contain: ${expected}" >&2
     exit 1
   fi
@@ -20,7 +20,7 @@ require() {
 
 forbid() {
   local prohibited="$1"
-  if rg --ignore-case --fixed-strings --quiet -- "${prohibited}" "${workflow}"; then
+  if grep -i -F -q -- "${prohibited}" "${workflow}"; then
     echo "${workflow} must not contain: ${prohibited}" >&2
     exit 1
   fi
@@ -39,6 +39,8 @@ require 'refs/tags/'
 require '6d03a38da5e3402bf97df1b3c46152887eb3778e'
 require 'cherry-pick --no-commit'
 require 'just ci'
+require 'Stub Tauri sidecar binaries'
+require 'desktop/src-tauri/binaries'
 require 'gh issue close'
 require 'Local macOS package handoff'
 require 'scripts/build-private-ca-macos.sh'
@@ -60,13 +62,13 @@ if [[ ! -x "${local_builder}" ]]; then
 fi
 
 for expected in 'set -euo pipefail' 'createUpdaterArtifacts": false' 'codesign --verify --deep --strict' 'hdiutil create'; do
-  if ! rg --fixed-strings --quiet -- "${expected}" "${local_builder}"; then
+  if ! grep -F -q -- "${expected}" "${local_builder}"; then
     echo "${local_builder} must contain: ${expected}" >&2
     exit 1
   fi
 done
 
-if rg --ignore-case --fixed-strings --quiet -- 'insecure_skip_verify' "${local_builder}"; then
+if grep -i -F -q -- 'insecure_skip_verify' "${local_builder}"; then
   echo "${local_builder} must not bypass TLS verification" >&2
   exit 1
 fi
