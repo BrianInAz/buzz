@@ -41,6 +41,7 @@ git -C "${work_directory}/source" diff --check
 (
   cd "${work_directory}/source"
   just desktop-install-ci
+  just _ensure-sidecar-stubs
   cat > desktop/src-tauri/tauri.private-ca.conf.json <<'EOF'
 { "bundle": { "macOS": { "minimumSystemVersion": "10.15" }, "createUpdaterArtifacts": false } }
 EOF
