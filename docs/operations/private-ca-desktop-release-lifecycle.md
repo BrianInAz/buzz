@@ -200,3 +200,20 @@ Document the public process here, the private runner process in
 claim completion until the monitor, BUILD/SKIP paths, hosted validation,
 prerelease, private WSS gate, state-preserving install, restart/history
 acceptance, rollback bundle, Beads evidence, and documentation are all green.
+
+## Verified release execution (v0.5.2)
+
+- Upstream tag: `v0.5.2` (SHA: `3e48f1b2365d326ee1c9582448d86a99b44ecd5d`)
+- Validated patch: `6d03a38da5e3402bf97df1b3c46152887eb3778e`
+- Public issue: [BrianInAz/buzz#3](https://github.com/BrianInAz/buzz/issues/3)
+- Private WSS gate: [BjzyLabs/homelab-playbooks run 30532490990](https://github.com/BjzyLabs/homelab-playbooks/actions/runs/30532490990) (PASSED)
+- Local build: `scripts/build-private-ca-macos.sh v0.5.2 3e48f1b2365d326ee1c9582448d86a99b44ecd5d`
+- Package DMG: `dist/private-ca/v0.5.2/Buzz-v0.5.2-private-ca-arm64.dmg`
+  - SHA256: `4bd377ece998835b699e89ac7efdbaeb0b9f9bdade650e2e7a949461ecc07b00`
+- Published prerelease: [buzz-private-ca-v0.5.2-r1](https://github.com/BrianInAz/buzz/releases/tag/buzz-private-ca-v0.5.2-r1)
+- Security tracking: [BjzyLabs/homelab-playbooks#2224](https://github.com/BjzyLabs/homelab-playbooks/issues/2224) (OPEN - remediation checklist posted; gate boundary enforced)
+- Process inventory:
+  - Official: `/Applications/Buzz.app/Contents/MacOS/buzz-desktop` (PID 41857, `xyz.block.buzz.app`)
+  - Development: `target/debug/buzz-desktop` (PID 76852, `xyz.block.buzz.app.dev.fix-macos-private-ca-websocket`)
+- Rollback archive: `/Users/b/Applications/Buzz Rollback/v0.5.2/Buzz.app`
+
