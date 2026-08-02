@@ -52,6 +52,9 @@ require "github.event.label.name == 'built'"
 require "github.event.label.name == 'accepted'"
 require 'accepted requires the built lifecycle state'
 require 'not a clean monitor-created ticket'
+require "gh issue view \"\${ISSUE_NUMBER}\" --repo \"\${GITHUB_REPOSITORY}\""
+require "gh issue comment \"\${ISSUE_NUMBER}\" --repo \"\${GITHUB_REPOSITORY}\""
+require "gh issue close \"\${ISSUE_NUMBER}\" --repo \"\${GITHUB_REPOSITORY}\""
 
 forbid 'BUZZ_TEST_WSS_URL'
 forbid 'buzz.bjzy.me'
