@@ -38,7 +38,7 @@ jobs:
           set -euo pipefail
           release="$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest")"
           tag="$(jq -r '.tag_name' <<<"${release}")"
-          [[ "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a stable tag: ${tag}" >&2; exit 1; }
+          tag="$(scripts/normalize-private-ca-desktop-tag.sh "${tag}")"
           existing="$(gh issue list --state all --search "[Buzz update] ${tag} available in:title" --json number --jq '.[0].number // empty')"
           [[ -z "${existing}" ]] || { echo "ticket already exists: #${existing}"; exit 0; }
           work="$(mktemp -d)"; trap 'rm -rf "${work}"' EXIT
@@ -78,7 +78,7 @@ jobs:
           if [[ "${patch_status}" == conflict ]]; then
             labels+=(--label remediation-required)
           fi
-          gh issue create --title "[Buzz update] ${tag} available" "${labels[@]}" --body-file "${work}/issue.md"
+          gh issue create --title "[Buzz update] ${tag} available" "${labels[@]}" --assignee BrianInAz --body-file "${work}/issue.md"
 
   skip:
     if: >-
@@ -96,6 +96,47 @@ jobs:
           set -euo pipefail
           gh issue comment "${{ github.event.issue.number }}" --body "Skipped by @BrianInAz; no private-CA package was built."
           gh issue close "${{ github.event.issue.number }}"
+
+  built:
+    if: >-
+      github.event_name == 'issues' && github.event.action == 'labeled' &&
+      github.event.label.name == 'built' && github.actor == 'BrianInAz'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Record the local package handoff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          body="$(gh issue view "${ISSUE_NUMBER}" --json body --jq .body)"
+          grep -Eq '^<!-- buzz-private-ca-release tag=(desktop-)?v[0-9]+\.[0-9]+\.[0-9]+ source_sha=[0-9a-f]{40} patch_sha=[0-9a-f]{40} patch_status=clean -->$' <<<"${body}" || { echo "not a clean monitor-created ticket" >&2; exit 1; }
+          gh issue comment "${ISSUE_NUMBER}" --body "Built by @BrianInAz on the approved Apple Silicon Mac. Record the immutable artifact, checksum, private WSS gate, and local acceptance evidence before adding \`accepted\`."
+
+  accepted:
+    if: >-
+      github.event_name == 'issues' && github.event.action == 'labeled' &&
+      github.event.label.name == 'accepted' && github.actor == 'BrianInAz'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Close an accepted release ticket
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          body="$(gh issue view "${ISSUE_NUMBER}" --json body --jq .body)"
+          grep -Eq '^<!-- buzz-private-ca-release tag=(desktop-)?v[0-9]+\.[0-9]+\.[0-9]+ source_sha=[0-9a-f]{40} patch_sha=[0-9a-f]{40} patch_status=clean -->$' <<<"${body}" || { echo "not a clean monitor-created ticket" >&2; exit 1; }
+          labels="$(gh issue view "${ISSUE_NUMBER}" --json labels --jq '.labels[].name')"
+          grep -Fxq built <<<"${labels}" || { echo "accepted requires the built lifecycle state" >&2; exit 1; }
+          gh issue comment "${ISSUE_NUMBER}" --body "Accepted by @BrianInAz after private WSS, state-preserving install, restart, reconnect, and history-restoration evidence was recorded."
+          gh issue close "${ISSUE_NUMBER}"
 
   approval:
     if: >-
@@ -118,7 +159,7 @@ jobs:
         run: |
           set -euo pipefail
           body="$(gh issue view "${ISSUE_NUMBER}" --json body --jq .body)"
-          marker="$(grep -E '^<!-- buzz-private-ca-release tag=v[0-9]+\.[0-9]+\.[0-9]+ source_sha=[0-9a-f]{40} patch_sha=[0-9a-f]{40} patch_status=clean -->$' <<<"${body}")"
+          marker="$(grep -E '^<!-- buzz-private-ca-release tag=(desktop-)?v[0-9]+\.[0-9]+\.[0-9]+ source_sha=[0-9a-f]{40} patch_sha=[0-9a-f]{40} patch_status=clean -->$' <<<"${body}")"
           [[ -n "${marker}" ]] || { echo "not a clean monitor-created ticket" >&2; exit 1; }
           tag="$(sed -E 's/.*tag=([^ ]+).*/\1/' <<<"${marker}")"
           source_sha="$(sed -E 's/.*source_sha=([^ ]+).*/\1/' <<<"${marker}")"
