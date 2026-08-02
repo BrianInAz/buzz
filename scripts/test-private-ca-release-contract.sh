@@ -3,6 +3,7 @@
 set -euo pipefail
 
 workflow=".github/workflows/private-ca-release.yml"
+ci_workflow=".github/workflows/ci.yml"
 hosted_builder="scripts/build-private-ca-macos.sh"
 tag_parser="scripts/normalize-private-ca-desktop-tag.sh"
 lifecycle_doc="docs/operations/private-ca-desktop-release-lifecycle.md"
@@ -24,6 +25,22 @@ forbid() {
   local prohibited="$1"
   if grep -i -F -q -- "${prohibited}" "${workflow}"; then
     echo "${workflow} must not contain: ${prohibited}" >&2
+    exit 1
+  fi
+}
+
+require_ci() {
+  local expected="$1"
+  if ! grep -F -q -- "${expected}" "${ci_workflow}"; then
+    echo "${ci_workflow} must contain: ${expected}" >&2
+    exit 1
+  fi
+}
+
+forbid_ci() {
+  local prohibited="$1"
+  if grep -F -q -- "${prohibited}" "${ci_workflow}"; then
+    echo "${ci_workflow} must not contain: ${prohibited}" >&2
     exit 1
   fi
 }
@@ -85,6 +102,13 @@ forbid 'id-token: write'
 forbid 'secrets.'
 forbid 'actions/attest-build-provenance@'
 forbid 'gh release create'
+
+require_ci 'cargo metadata --locked --manifest-path desktop/src-tauri/Cargo.toml --features mesh-llm --format-version 1'
+require_ci 'package["manifest_path"] for package in data["packages"] if package["name"] == "mesh-llm-sdk"'
+require_ci 'tomllib.load(open("desktop/src-tauri/Cargo.lock", "rb"))'
+forbid_ci 'tomllib.load(open("Cargo.lock", "rb"))'
+# shellcheck disable=SC2016 # This is an intentionally literal workflow fragment.
+forbid_ci 'find "${CARGO_HOME:-$HOME/.cargo}/git/checkouts"'
 
 require_doc "standard GitHub-hosted \`macos-15\` Apple Silicon runner"
 require_doc 'free and unlimited for public repositories'
