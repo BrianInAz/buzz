@@ -81,6 +81,8 @@ env:
 jobs:
   build:
     name: Build (${{ matrix.platform }})
+    # Fork pull requests still compile, but only canonical upstream publishes.
+    if: github.event_name == 'pull_request' || github.repository == 'block/buzz'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
@@ -224,7 +226,7 @@ jobs:
 
   merge:
     name: Merge ${{ matrix.variant }} multi-arch manifest
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.repository == 'block/buzz'
     runs-on: ubuntu-24.04
     needs: build
     timeout-minutes: 15
@@ -342,6 +344,8 @@ jobs:
 
   push-gateway-build:
     name: Build public push gateway (${{ matrix.platform }})
+    # Fork pull requests still compile, but only canonical upstream publishes.
+    if: github.event_name == 'pull_request' || github.repository == 'block/buzz'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
@@ -419,7 +423,7 @@ jobs:
 
   push-gateway-merge:
     name: Publish public push gateway image
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.repository == 'block/buzz'
     runs-on: ubuntu-24.04
     needs: push-gateway-build
     timeout-minutes: 15

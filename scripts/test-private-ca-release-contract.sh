@@ -152,6 +152,8 @@ forbid_ci 'find "${CARGO_HOME:-$HOME/.cargo}/git/checkouts"'
 # authenticate to GHCR or try to export caches into an upstream namespace.
 require_docker "if: github.event_name != 'pull_request'"
 forbid_docker "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository"
+require_docker "if: github.event_name == 'pull_request' || github.repository == 'block/buzz'"
+require_docker "if: github.event_name != 'pull_request' && github.repository == 'block/buzz'"
 
 require_doc "standard GitHub-hosted \`macos-15\` Apple Silicon runner"
 require_doc 'standard hosted runners as free and'
