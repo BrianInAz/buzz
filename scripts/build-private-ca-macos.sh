@@ -14,6 +14,10 @@ output_directory="${3:-$PWD/dist/private-ca/${tag}}"
   echo "this packaging helper must run on macOS" >&2
   exit 1
 }
+[[ "$(uname -m)" == "arm64" ]] || {
+  echo "this packaging helper requires Apple Silicon" >&2
+  exit 1
+}
 
 for command in git just pnpm codesign hdiutil shasum; do
   command -v "${command}" >/dev/null || {
@@ -42,11 +46,33 @@ git -C "${work_directory}/source" diff --check
   cd "${work_directory}/source"
   just desktop-install-ci
   just _ensure-sidecar-stubs
+  sdk_manifest="$({
+    cargo metadata --locked --manifest-path desktop/src-tauri/Cargo.toml \
+      --features mesh-llm --format-version 1
+  } | python3 -c 'import json, sys; data = json.load(sys.stdin); print(next(package["manifest_path"] for package in data["packages"] if package["name"] == "mesh-llm-sdk"))')"
+  mesh_root="$(dirname "${sdk_manifest}")"
+  while [[ "${mesh_root}" != "/" && ! -x "${mesh_root}/scripts/prepare-llama.sh" ]]; do
+    mesh_root="$(dirname "${mesh_root}")"
+  done
+  [[ -x "${mesh_root}/scripts/prepare-llama.sh" && -x "${mesh_root}/scripts/build-llama.sh" ]] || {
+    echo "mesh-llm native build scripts are unavailable" >&2
+    exit 1
+  }
+  export LLAMA_STAGE_BACKEND=metal
+  export LLAMA_STAGE_BUILD_DIR="${work_directory}/mesh-llama/build-stage-abi-metal"
+  export CMAKE_OSX_DEPLOYMENT_TARGET=10.15
+  "${mesh_root}/scripts/prepare-llama.sh" pinned
+  "${mesh_root}/scripts/build-llama.sh" -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15
   cat > desktop/src-tauri/tauri.private-ca.conf.json <<'EOF'
 { "bundle": { "macOS": { "minimumSystemVersion": "10.15" }, "createUpdaterArtifacts": false } }
 EOF
   cd desktop
-  pnpm tauri build --verbose --no-sign --features mesh-llm --config src-tauri/tauri.private-ca.conf.json
+  CMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    MACOSX_DEPLOYMENT_TARGET=10.15 \
+    SKIPPY_LLAMA_AUTO_BUILD=0 \
+    TAURI_BUNDLER_DMG_IGNORE_CI=true \
+    pnpm tauri build --verbose --no-sign --features mesh-llm \
+      --config src-tauri/tauri.private-ca.conf.json
 )
 
 app_path="${work_directory}/source/desktop/src-tauri/target/release/bundle/macos/Buzz.app"

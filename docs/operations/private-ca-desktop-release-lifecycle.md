@@ -119,30 +119,43 @@ to the `desktop-vX.Y.Z` namespace. After this correction is merged, a manual
 dispatch must create exactly one unapproved `desktop-v0.5.3` decision ticket.
 That dispatch does not authorize a package build or installation.
 
-## Hosted validation and local package
+## Hosted validation and hosted package
 
-Standard GitHub-hosted Ubuntu runners are used for bounded, reproducible source
-validation. GitHub-hosted macOS and Windows runners are not used. The approved
-local Mac performs the package step after remote validation succeeds.
+Standard GitHub-hosted Ubuntu runners perform bounded, reproducible source
+validation. After Brian approves the monitor-created ticket and Ubuntu is
+green, the standard GitHub-hosted `macos-15` Apple Silicon runner builds and
+packages the candidate. GitHub documents standard hosted runners as
+free and unlimited for public repositories and identifies `macos-15` as a standard M1
+ARM64 label:
+<https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories>.
+
+The package job fails closed if the fork is private or the resolved runner is
+not ARM64. Do not substitute a billable larger runner. The hosted job receives
+no Apple certificate, signing key, OIDC signing permission, private endpoint,
+or homelab secret. It applies an ad-hoc signature, verifies the app and
+checksums, uploads one seven-day Actions artifact, records the run and artifact
+on the decision ticket, and applies `built` only after every package step is
+green.
 
 The approved build has three gates:
 
 1. Ubuntu checks out the exact upstream tag, applies the pinned patch without
    committing it, then runs formatting, Clippy, focused connector tests, and
    `just ci`.
-2. The approved local Apple Silicon Mac runs the platform-trust and private WSS
-   gates before installation; no identity key is supplied to either gate.
-3. The same local Mac runs `scripts/build-private-ca-macos.sh` with the ticket's
-   immutable tag and SHA. It uses existing upstream sidecar and
-   Tauri conventions. The package has no updater keys, no notarization, no
-   Apple Developer signing identity, and no private infrastructure values.
-   The updater remains disabled. The app is ad-hoc signed and verified before
-   the DMG is rebuilt.
+2. Standard `macos-15` runs `scripts/build-private-ca-macos.sh` with the
+   ticket's immutable tag and SHA. It resolves and builds the pinned mesh native
+   runtime, uses existing upstream sidecar and Tauri conventions, disables the
+   updater, ad-hoc signs and verifies the app, rebuilds the DMG, verifies
+   `SHA256SUMS`, and uploads the immutable candidate artifact.
+3. The private WSS gate runs on the existing homelab-connected `ghRunner` with
+   no identity key. Brian then downloads the exact artifact to his MacBook and
+   performs the state-preserving installation and runtime acceptance.
 
-The local helper writes the arm64 DMG, SHA256SUMS, applied patch, and a manifest
-to `dist/private-ca/<tag>/`. Publish it as a fork prerelease only after the
-private WSS gate and local acceptance are green; it is never the general
-latest release.
+The hosted helper writes the arm64 DMG, SHA256SUMS, applied patch, and a
+manifest to `dist/private-ca/<tag>/`. Publish it as a fork prerelease only after
+the private WSS gate and MacBook acceptance are green; it is never the general
+latest release. Actions artifact storage is separate from free runner compute,
+so the intermediate candidate is retained for only seven days.
 
 ## Private WSS gate
 

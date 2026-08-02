@@ -97,25 +97,6 @@ jobs:
           gh issue comment "${{ github.event.issue.number }}" --repo "${GITHUB_REPOSITORY}" --body "Skipped by @BrianInAz; no private-CA package was built."
           gh issue close "${{ github.event.issue.number }}" --repo "${GITHUB_REPOSITORY}"
 
-  built:
-    if: >-
-      github.event_name == 'issues' && github.event.action == 'labeled' &&
-      github.event.label.name == 'built' && github.actor == 'BrianInAz'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      issues: write
-    steps:
-      - name: Record the local package handoff
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-        run: |
-          set -euo pipefail
-          body="$(gh issue view "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --json body --jq .body)"
-          grep -Eq '^<!-- buzz-private-ca-release tag=(desktop-)?v[0-9]+\.[0-9]+\.[0-9]+ source_sha=[0-9a-f]{40} patch_sha=[0-9a-f]{40} patch_status=clean -->$' <<<"${body}" || { echo "not a clean monitor-created ticket" >&2; exit 1; }
-          gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body "Built by @BrianInAz on the approved Apple Silicon Mac. Record the immutable artifact, checksum, private WSS gate, and local acceptance evidence before adding \`accepted\`."
-
   accepted:
     if: >-
       github.event_name == 'issues' && github.event.action == 'labeled' &&
@@ -206,16 +187,61 @@ jobs:
         working-directory: ${{ runner.temp }}/source
         run: cargo test --manifest-path desktop/src-tauri/Cargo.toml native_websocket::tests::native_websocket_platform_tls_connector_is_available
 
-  local-macos-handoff:
+  package:
+    name: Build private-CA package on standard hosted Apple Silicon
     needs: [approval, validate]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    runs-on: macos-15
+    timeout-minutes: 90
     permissions:
+      contents: read
       issues: write
     steps:
-      - name: Local macOS package handoff
+      - name: Require free standard public ARM64 runner
         env:
-          GH_TOKEN: ${{ github.token }}
+          REPOSITORY_IS_PRIVATE: ${{ github.event.repository.private }}
         run: |
           set -euo pipefail
-          gh issue comment "${{ needs.approval.outputs.issue_number }}" --repo "${GITHUB_REPOSITORY}" --body "Remote validation passed. Package on the approved local Mac with scripts/build-private-ca-macos.sh ${{ needs.approval.outputs.tag }} ${{ needs.approval.outputs.source_sha }}. GitHub-hosted macOS runners are intentionally not used."
+          [[ "${REPOSITORY_IS_PRIVATE}" == "false" ]] || {
+            echo "This package lane is approved only for free standard runners in a public repository." >&2
+            exit 1
+          }
+          [[ "$(uname -m)" == "arm64" ]] || {
+            echo "macos-15 must resolve to a standard Apple Silicon runner." >&2
+            exit 1
+          }
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
+      - name: Build and verify ad-hoc-signed package
+        env:
+          SOURCE_SHA: ${{ needs.approval.outputs.source_sha }}
+          TAG: ${{ needs.approval.outputs.tag }}
+        run: |
+          set -euo pipefail
+          output_directory="${RUNNER_TEMP}/private-ca/${TAG}"
+          scripts/build-private-ca-macos.sh "${TAG}" "${SOURCE_SHA}" "${output_directory}"
+          (
+            cd "${output_directory}"
+            shasum -a 256 -c SHA256SUMS
+          )
+      - name: Upload short-lived private-CA candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: buzz-private-ca-${{ needs.approval.outputs.tag }}-${{ needs.approval.outputs.source_sha }}
+          path: ${{ runner.temp }}/private-ca/${{ needs.approval.outputs.tag }}/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Record hosted package evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: buzz-private-ca-${{ needs.approval.outputs.tag }}-${{ needs.approval.outputs.source_sha }}
+          ISSUE_NUMBER: ${{ needs.approval.outputs.issue_number }}
+          SOURCE_SHA: ${{ needs.approval.outputs.source_sha }}
+          TAG: ${{ needs.approval.outputs.tag }}
+        run: |
+          set -euo pipefail
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body "GitHub-hosted macOS package built on the free standard macos-15 Apple Silicon runner. Source: \`${SOURCE_SHA}\`. Artifact: \`${ARTIFACT_NAME}\` (retained 7 days). Run: ${run_url}. The app is ad-hoc signed; no Apple signing identity or secret was used. Next: run the private WSS gate, then download and perform state-preserving installation and acceptance on Brian's MacBook before adding \`accepted\`."
+          gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --add-label built
