@@ -19,7 +19,8 @@ concurrency:
 
 env:
   UPSTREAM_REPOSITORY: block/buzz
-  PATCH_COMMIT: 6d03a38da5e3402bf97df1b3c46152887eb3778e
+  PRIVATE_CA_PATCH_COMMIT: 6d03a38da5e3402bf97df1b3c46152887eb3778e
+  SECURITY_PATCH_COMMIT: 7dbfcd785be0a9c002863a793c4fbab89a6258c3
 
 jobs:
   monitor:
@@ -44,25 +45,26 @@ jobs:
           work="$(mktemp -d)"; trap 'rm -rf "${work}"' EXIT
           git clone --depth 1 --branch "${tag}" "https://github.com/${UPSTREAM_REPOSITORY}.git" "${work}/source"
           source_sha="$(git -C "${work}/source" rev-parse HEAD)"
-          git -C "${work}/source" fetch --depth 2 "https://github.com/${GITHUB_REPOSITORY}.git" "${PATCH_COMMIT}"
-          if git -C "${work}/source" cherry-pick --no-commit "${PATCH_COMMIT}"; then
+          if for patch_commit in "${PRIVATE_CA_PATCH_COMMIT}" "${SECURITY_PATCH_COMMIT}"; do
+            git -C "${work}/source" fetch --depth 2 "https://github.com/${GITHUB_REPOSITORY}.git" "${patch_commit}"
+            git -C "${work}/source" cherry-pick --no-commit "${patch_commit}"
+          done; then
             patch_status=clean
-            git -C "${work}/source" cherry-pick --abort || git -C "${work}/source" reset --hard
           else
             patch_status=conflict
-            git -C "${work}/source" cherry-pick --abort || git -C "${work}/source" reset --hard
           fi
+          git -C "${work}/source" reset --hard "${source_sha}"
           for label in buzz-update build-approved skip remediation-required built accepted; do
             gh label create "${label}" --force --color 0E8A16 --description "Buzz private-CA release lifecycle" >/dev/null
           done
           cat >"${work}/issue.md" <<EOF
-          <!-- buzz-private-ca-release tag=${tag} source_sha=${source_sha} patch_sha=${PATCH_COMMIT} patch_status=${patch_status} -->
+          <!-- buzz-private-ca-release tag=${tag} source_sha=${source_sha} private_ca_patch_sha=${PRIVATE_CA_PATCH_COMMIT} security_patch_sha=${SECURITY_PATCH_COMMIT} patch_status=${patch_status} -->
           ## Buzz ${tag} is available
 
           Upstream release: $(jq -r '.html_url' <<<"${release}")
           Published: $(jq -r '.published_at' <<<"${release}")
           Immutable source SHA: \`${source_sha}\`
-          Patch applicability: **${patch_status}**
+          Certified patch-series applicability: **${patch_status}**
 
           ### Changelog
 
@@ -113,7 +115,7 @@ jobs:
         run: |
           set -euo pipefail
           body="$(gh issue view "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --json body --jq .body)"
-          grep -Eq '^<!-- buzz-private-ca-release tag=(desktop-)?v[0-9]+\.[0-9]+\.[0-9]+ source_sha=[0-9a-f]{40} patch_sha=[0-9a-f]{40} patch_status=clean -->$' <<<"${body}" || { echo "not a clean monitor-created ticket" >&2; exit 1; }
+          grep -Eq '^<!-- buzz-private-ca-release tag=(desktop-)?v[0-9]+\.[0-9]+\.[0-9]+ source_sha=[0-9a-f]{40} private_ca_patch_sha=[0-9a-f]{40} security_patch_sha=[0-9a-f]{40} patch_status=clean -->$' <<<"${body}" || { echo "not a clean monitor-created ticket" >&2; exit 1; }
           labels="$(gh issue view "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --json labels --jq '.labels[].name')"
           grep -Fxq built <<<"${labels}" || { echo "accepted requires the built lifecycle state" >&2; exit 1; }
           gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body "Accepted by @BrianInAz after private WSS, state-preserving install, restart, reconnect, and history-restoration evidence was recorded."
@@ -140,12 +142,14 @@ jobs:
         run: |
           set -euo pipefail
           body="$(gh issue view "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --json body --jq .body)"
-          marker="$(grep -E '^<!-- buzz-private-ca-release tag=(desktop-)?v[0-9]+\.[0-9]+\.[0-9]+ source_sha=[0-9a-f]{40} patch_sha=[0-9a-f]{40} patch_status=clean -->$' <<<"${body}")"
+          marker="$(grep -E '^<!-- buzz-private-ca-release tag=(desktop-)?v[0-9]+\.[0-9]+\.[0-9]+ source_sha=[0-9a-f]{40} private_ca_patch_sha=[0-9a-f]{40} security_patch_sha=[0-9a-f]{40} patch_status=clean -->$' <<<"${body}")"
           [[ -n "${marker}" ]] || { echo "not a clean monitor-created ticket" >&2; exit 1; }
           tag="$(sed -E 's/.*tag=([^ ]+).*/\1/' <<<"${marker}")"
           source_sha="$(sed -E 's/.*source_sha=([^ ]+).*/\1/' <<<"${marker}")"
-          patch_sha="$(sed -E 's/.*patch_sha=([^ ]+).*/\1/' <<<"${marker}")"
-          [[ "${patch_sha}" == "${PATCH_COMMIT}" ]] || { echo "wrong patch" >&2; exit 1; }
+          private_ca_patch_sha="$(sed -E 's/.*private_ca_patch_sha=([^ ]+).*/\1/' <<<"${marker}")"
+          security_patch_sha="$(sed -E 's/.*security_patch_sha=([^ ]+).*/\1/' <<<"${marker}")"
+          [[ "${private_ca_patch_sha}" == "${PRIVATE_CA_PATCH_COMMIT}" ]] || { echo "wrong private-CA patch" >&2; exit 1; }
+          [[ "${security_patch_sha}" == "${SECURITY_PATCH_COMMIT}" ]] || { echo "wrong security patch" >&2; exit 1; }
           remote_sha="$(git ls-remote "https://github.com/${UPSTREAM_REPOSITORY}.git" "refs/tags/${tag}^{}" | awk '{print $1}')"
           [[ -n "${remote_sha}" ]] || remote_sha="$(git ls-remote "https://github.com/${UPSTREAM_REPOSITORY}.git" "refs/tags/${tag}" | awk '{print $1}')"
           [[ "${remote_sha}" == "${source_sha}" ]] || { echo "tag SHA changed" >&2; exit 1; }
@@ -163,14 +167,26 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      - name: Fetch immutable source and apply patch
+      - name: Fetch immutable source and apply certified patch series
         run: |
           set -euo pipefail
           git clone --depth 1 --branch "${{ needs.approval.outputs.tag }}" "https://github.com/${UPSTREAM_REPOSITORY}.git" "$RUNNER_TEMP/source"
           [[ "$(git -C "$RUNNER_TEMP/source" rev-parse HEAD)" == "${{ needs.approval.outputs.source_sha }}" ]]
-          git -C "$RUNNER_TEMP/source" fetch --depth 2 "https://github.com/${GITHUB_REPOSITORY}.git" "${PATCH_COMMIT}"
-          git -C "$RUNNER_TEMP/source" cherry-pick --no-commit "${PATCH_COMMIT}"
+          for patch_commit in "${PRIVATE_CA_PATCH_COMMIT}" "${SECURITY_PATCH_COMMIT}"; do
+            git -C "$RUNNER_TEMP/source" fetch --depth 2 "https://github.com/${GITHUB_REPOSITORY}.git" "${patch_commit}"
+            git -C "$RUNNER_TEMP/source" cherry-pick --no-commit "${patch_commit}"
+          done
           git -C "$RUNNER_TEMP/source" diff --check
+      - name: Reject vulnerable root and Apple Silicon desktop graphs
+        working-directory: ${{ runner.temp }}/source
+        run: |
+          set -euo pipefail
+          cargo-deny --locked check --config deny.toml advisories
+          cargo-deny --locked \
+            --manifest-path desktop/src-tauri/Cargo.toml \
+            --target aarch64-apple-darwin \
+            --exclude-dev \
+            check --config deny.toml advisories
       - name: Run full upstream CI
         working-directory: ${{ runner.temp }}/source
         run: just ci
@@ -243,5 +259,5 @@ jobs:
         run: |
           set -euo pipefail
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body "GitHub-hosted macOS package built on the free standard macos-15 Apple Silicon runner. Source: \`${SOURCE_SHA}\`. Artifact: \`${ARTIFACT_NAME}\` (retained 7 days). Run: ${run_url}. The app is ad-hoc signed; no Apple signing identity or secret was used. Next: run the private WSS gate, then download and perform state-preserving installation and acceptance on Brian's MacBook before adding \`accepted\`."
+          gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body "GitHub-hosted macOS package built on the free standard macos-15 Apple Silicon runner. Source: \`${SOURCE_SHA}\`. Certified patches: \`${PRIVATE_CA_PATCH_COMMIT}\`, \`${SECURITY_PATCH_COMMIT}\`. Artifact: \`${ARTIFACT_NAME}\` (retained 7 days). Run: ${run_url}. The app is ad-hoc signed; no Apple signing identity or secret was used. Next: run the private WSS gate, then download and perform state-preserving installation and acceptance on Brian's MacBook before adding \`accepted\`."
           gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --add-label built

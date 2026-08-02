@@ -64,7 +64,22 @@ require "github.event.label.name == 'build-approved'"
 require "github.event.label.name == 'skip'"
 require 'refs/tags/'
 require '6d03a38da5e3402bf97df1b3c46152887eb3778e'
+require 'PRIVATE_CA_PATCH_COMMIT:'
+require 'SECURITY_PATCH_COMMIT:'
+require 'private_ca_patch_sha='
+require 'security_patch_sha='
+# shellcheck disable=SC2016 # These are intentionally literal workflow fragments.
+require 'for patch_commit in "${PRIVATE_CA_PATCH_COMMIT}" "${SECURITY_PATCH_COMMIT}"'
+# shellcheck disable=SC2016 # These are intentionally literal workflow fragments.
+require '[[ "${private_ca_patch_sha}" == "${PRIVATE_CA_PATCH_COMMIT}" ]]'
+# shellcheck disable=SC2016 # These are intentionally literal workflow fragments.
+require '[[ "${security_patch_sha}" == "${SECURITY_PATCH_COMMIT}" ]]'
 require 'cherry-pick --no-commit'
+require 'cargo-deny --locked check --config deny.toml advisories'
+require "cargo-deny --locked \\"
+require "--manifest-path desktop/src-tauri/Cargo.toml \\"
+require "--target aarch64-apple-darwin \\"
+require "--exclude-dev \\"
 require 'just ci'
 require 'Stub Tauri sidecar binaries'
 require 'desktop/src-tauri/binaries'
@@ -102,6 +117,12 @@ forbid 'id-token: write'
 forbid 'secrets.'
 forbid 'actions/attest-build-provenance@'
 forbid 'gh release create'
+forbid ' patch_sha='
+
+if grep -Eq '^  PATCH_COMMIT:' "${workflow}"; then
+  echo "${workflow} must not use the legacy single PATCH_COMMIT input" >&2
+  exit 1
+fi
 
 require_ci 'cargo metadata --locked --manifest-path desktop/src-tauri/Cargo.toml --features mesh-llm --format-version 1'
 require_ci 'package["manifest_path"] for package in data["packages"] if package["name"] == "mesh-llm-sdk"'
@@ -111,7 +132,8 @@ forbid_ci 'tomllib.load(open("Cargo.lock", "rb"))'
 forbid_ci 'find "${CARGO_HOME:-$HOME/.cargo}/git/checkouts"'
 
 require_doc "standard GitHub-hosted \`macos-15\` Apple Silicon runner"
-require_doc 'free and unlimited for public repositories'
+require_doc 'standard hosted runners as free and'
+require_doc 'unlimited for public repositories'
 require_doc "Brian then downloads the exact artifact to his MacBook"
 
 if [[ ! -x "${hosted_builder}" ]]; then
@@ -138,7 +160,8 @@ for tag in relay-v0.5.3 desktop-v0.5.3-rc.1 v0.5.3-beta.1 nonsense; do
   fi
 done
 
-for expected in 'set -euo pipefail' "[[ \"\$(uname -m)\" == \"arm64\" ]]" 'cargo metadata --locked --manifest-path' 'prepare-llama.sh' 'build-llama.sh' 'SKIPPY_LLAMA_AUTO_BUILD=0' 'createUpdaterArtifacts": false' 'codesign --force --deep --sign -' 'codesign --verify --deep --strict' 'hdiutil create'; do
+# shellcheck disable=SC2016 # These are intentionally literal builder fragments.
+for expected in 'set -euo pipefail' "[[ \"\$(uname -m)\" == \"arm64\" ]]" 'private_ca_patch_commit=' 'security_patch_commit=' 'for patch_commit in "${private_ca_patch_commit}" "${security_patch_commit}"' 'cargo-deny --locked check --config deny.toml advisories' "--target aarch64-apple-darwin \\" '"patch_shas":[' 'cargo metadata --locked --manifest-path' 'prepare-llama.sh' 'build-llama.sh' 'SKIPPY_LLAMA_AUTO_BUILD=0' 'createUpdaterArtifacts": false' 'codesign --force --deep --sign -' 'codesign --verify --deep --strict' 'hdiutil create'; do
   if ! grep -F -q -- "${expected}" "${hosted_builder}"; then
     echo "${hosted_builder} must contain: ${expected}" >&2
     exit 1

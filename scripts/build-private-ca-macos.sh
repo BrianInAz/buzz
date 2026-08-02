@@ -4,7 +4,8 @@ set -euo pipefail
 
 readonly upstream_repository="https://github.com/block/buzz.git"
 readonly fork_repository="https://github.com/BrianInAz/buzz.git"
-readonly patch_commit="6d03a38da5e3402bf97df1b3c46152887eb3778e"
+readonly private_ca_patch_commit="6d03a38da5e3402bf97df1b3c46152887eb3778e"
+readonly security_patch_commit="7dbfcd785be0a9c002863a793c4fbab89a6258c3"
 
 tag="${1:?usage: $0 <upstream-tag> <upstream-sha> [output-directory]}"
 source_sha="${2:?usage: $0 <upstream-tag> <upstream-sha> [output-directory]}"
@@ -19,7 +20,7 @@ output_directory="${3:-$PWD/dist/private-ca/${tag}}"
   exit 1
 }
 
-for command in git just pnpm codesign hdiutil shasum; do
+for command in git just pnpm cargo-deny codesign hdiutil shasum; do
   command -v "${command}" >/dev/null || {
     echo "required command is unavailable: ${command}" >&2
     exit 1
@@ -38,12 +39,20 @@ git clone --depth 1 --branch "${tag}" "${upstream_repository}" "${work_directory
   echo "upstream tag did not resolve to the approved SHA" >&2
   exit 1
 }
-git -C "${work_directory}/source" fetch --depth 2 "${fork_repository}" "${patch_commit}"
-git -C "${work_directory}/source" cherry-pick --no-commit "${patch_commit}"
+for patch_commit in "${private_ca_patch_commit}" "${security_patch_commit}"; do
+  git -C "${work_directory}/source" fetch --depth 2 "${fork_repository}" "${patch_commit}"
+  git -C "${work_directory}/source" cherry-pick --no-commit "${patch_commit}"
+done
 git -C "${work_directory}/source" diff --check
 
 (
   cd "${work_directory}/source"
+  cargo-deny --locked check --config deny.toml advisories
+  cargo-deny --locked \
+    --manifest-path desktop/src-tauri/Cargo.toml \
+    --target aarch64-apple-darwin \
+    --exclude-dev \
+    check --config deny.toml advisories
   just desktop-install-ci
   just _ensure-sidecar-stubs
   sdk_manifest="$({
@@ -83,7 +92,7 @@ cp -R "${app_path}" "${output_directory}/dmg-root/Buzz.app"
 hdiutil create -volname Buzz -srcfolder "${output_directory}/dmg-root" -ov -format UDZO "${dmg_path}"
 
 cat > "${output_directory}/manifest.json" <<EOF
-{"upstream_tag":"${tag}","upstream_sha":"${source_sha}","patch_sha":"${patch_commit}","result_tree_sha":"$(git -C "${work_directory}/source" write-tree)","architecture":"$(uname -m)"}
+{"upstream_tag":"${tag}","upstream_sha":"${source_sha}","private_ca_patch_sha":"${private_ca_patch_commit}","security_patch_sha":"${security_patch_commit}","patch_shas":["${private_ca_patch_commit}","${security_patch_commit}"],"result_tree_sha":"$(git -C "${work_directory}/source" write-tree)","architecture":"$(uname -m)"}
 EOF
 git -C "${work_directory}/source" diff --binary "${source_sha}" > "${output_directory}/private-ca.patch"
 (
