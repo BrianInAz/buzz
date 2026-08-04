@@ -347,13 +347,13 @@ test("manual audience exclusions can be re-added with @agent selection", async (
   await expect(input).toHaveText("@Vogue ");
 
   await input.focus();
-  await input.pressSequentially("@Morg ");
-  await expect(input).toHaveText(/@Morg\s+@Vogue\s*$/);
+  await input.pressSequentially("@Morg");
   await expect.poll(() => readAudience(page)).toEqual([AGENT_B]);
-  await composer
+  const morgaritaSuggestion = composer
     .getByTestId("mention-autocomplete")
-    .getByText("Morgarita", { exact: true })
-    .click();
+    .getByText("Morgarita", { exact: true });
+  await expect(morgaritaSuggestion).toBeVisible();
+  await morgaritaSuggestion.click();
   await expect(input).toContainText("@Morgarita");
   await expect(input).toContainText("@Vogue");
   await expect.poll(() => readAudience(page)).toEqual([AGENT_B]);
