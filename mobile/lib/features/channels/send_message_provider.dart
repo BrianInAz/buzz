@@ -2,6 +2,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 
 import '../../shared/contextual_agent/composer_send_audience.dart';
 import '../../shared/contextual_agent/contextual_agent_conversation_policy.dart';
+import '../../shared/contextual_agent/persistent_agent_audience.dart';
 import '../../shared/contextual_agent/unaddressed_channel_agent_mode.dart';
 import '../../shared/mentions/agent_identity_provider.dart';
 import '../../shared/relay/relay.dart';
@@ -25,6 +26,23 @@ class SendMessage {
   final UnaddressedChannelAgentMode Function() _readUnaddressedMode;
   final Future<List<AgentDirectoryEntry>> Function() _fetchAgentDirectory;
   final Channel? Function(String channelId) _readChannel;
+  final bool Function() _readKeepAddressedAgentsActive;
+  final int Function() _readPersistentAudienceGeneration;
+  final int Function(String scope) _readPersistentAudienceRevision;
+  final String? Function({
+    required String ownerPubkey,
+    required String channelId,
+    String? threadRootId,
+  })
+  _resolveAudienceScope;
+  final List<String> Function(String scope) _readPersistentAudience;
+  final void Function({
+    required int expectedGeneration,
+    required int? expectedRevision,
+    required List<String> explicitAgentPubkeys,
+    required String? scope,
+  })
+  _promotePersistentAudience;
 
   SendMessage({
     required SignedEventRelay signedEventRelay,
@@ -39,6 +57,23 @@ class SendMessage {
     required UnaddressedChannelAgentMode Function() readUnaddressedMode,
     required Future<List<AgentDirectoryEntry>> Function() fetchAgentDirectory,
     required Channel? Function(String channelId) readChannel,
+    required bool Function() readKeepAddressedAgentsActive,
+    required int Function() readPersistentAudienceGeneration,
+    required int Function(String scope) readPersistentAudienceRevision,
+    required String? Function({
+      required String ownerPubkey,
+      required String channelId,
+      String? threadRootId,
+    })
+    resolveAudienceScope,
+    required List<String> Function(String scope) readPersistentAudience,
+    required void Function({
+      required int expectedGeneration,
+      required int? expectedRevision,
+      required List<String> explicitAgentPubkeys,
+      required String? scope,
+    })
+    promotePersistentAudience,
   }) : _signedEventRelay = signedEventRelay,
        _fetchMembers = fetchMembers,
        _readUserCache = readUserCache,
@@ -48,7 +83,27 @@ class SendMessage {
        _isDeliveryValid = isDeliveryValid,
        _readUnaddressedMode = readUnaddressedMode,
        _fetchAgentDirectory = fetchAgentDirectory,
-       _readChannel = readChannel;
+       _readChannel = readChannel,
+       _readKeepAddressedAgentsActive = readKeepAddressedAgentsActive,
+       _readPersistentAudienceGeneration = readPersistentAudienceGeneration,
+       _readPersistentAudienceRevision = readPersistentAudienceRevision,
+       _resolveAudienceScope = resolveAudienceScope,
+       _readPersistentAudience = readPersistentAudience,
+       _promotePersistentAudience = promotePersistentAudience;
+
+  String? _buildAudienceScope({
+    required String channelId,
+    String? threadRootId,
+  }) {
+    final owner = _signedEventRelay.pubkey;
+    if (owner == null || owner.isEmpty) return null;
+
+    return _resolveAudienceScope(
+      ownerPubkey: owner,
+      channelId: channelId,
+      threadRootId: threadRootId,
+    );
+  }
 
   /// Send a text message to a channel.
   ///
@@ -81,17 +136,33 @@ class SendMessage {
         if (seenMentions.add(pk.toLowerCase())) pk.toLowerCase(),
     ];
 
-    final normalizedMentions = await _mergeContextualAudience(
+    final threadAudienceScope = _buildAudienceScope(
+      channelId: channelId,
+      threadRootId: rootEventId ?? parentEventId,
+    );
+    final keepAddressedAgentsActive =
+        _readKeepAddressedAgentsActive() && threadAudienceScope != null;
+    final audienceGeneration = _readPersistentAudienceGeneration();
+    final audienceRevision = threadAudienceScope == null
+        ? null
+        : _readPersistentAudienceRevision(threadAudienceScope);
+    final persistentAudience = threadAudienceScope == null
+        ? const <String>[]
+        : _readPersistentAudience(threadAudienceScope);
+
+    final resolution = await _mergeContextualAudience(
       channelId: channelId,
       explicitMentions: explicitMentions,
       parentEventId: parentEventId,
       rootEventId: rootEventId,
+      keepAddressedAgentsActive: keepAddressedAgentsActive,
+      persistentThreadAudience: persistentAudience,
     );
 
     final tags = <List<String>>[
       ['h', channelId],
       if (parentEventId != null) ..._buildReplyTags(parentEventId, rootEventId),
-      for (final pk in normalizedMentions) ['p', pk],
+      for (final pk in resolution.mentionPubkeys) ['p', pk],
       ...mediaTags,
     ];
 
@@ -109,6 +180,13 @@ class SendMessage {
       );
       final event = localMessage;
       if (event != null) _completeLocalMessage(channelId, event.id);
+
+      _promotePersistentAudience(
+        expectedGeneration: audienceGeneration,
+        expectedRevision: audienceRevision,
+        explicitAgentPubkeys: resolution.explicitAgentPubkeys,
+        scope: threadAudienceScope,
+      );
     } catch (_) {
       final event = localMessage;
       if (event != null) _removeLocalMessage(channelId, event.id);
@@ -176,11 +254,13 @@ class SendMessage {
   }
 
   /// Merge explicit mentions with the unaddressed-channel agent policy.
-  Future<List<String>> _mergeContextualAudience({
+  Future<_AudienceResolution> _mergeContextualAudience({
     required String channelId,
     required List<String> explicitMentions,
     String? parentEventId,
     String? rootEventId,
+    required bool keepAddressedAgentsActive,
+    required List<String> persistentThreadAudience,
   }) async {
     List<ChannelMember> members;
     var memberLoadError = false;
@@ -224,13 +304,13 @@ class SendMessage {
       conversation: conversation,
       messagePosition: messagePosition,
       unaddressedMode: _readUnaddressedMode(),
-      keepAddressedAgentsActive: false,
+      keepAddressedAgentsActive: keepAddressedAgentsActive,
       explicitMentionPubkeys: explicitMentions,
       explicitAgentPubkeys: explicitAgentPubkeys,
       currentAgentPubkey: currentAgent,
       channelMemberPubkeys: memberPubkeys,
       verifiedChannelAgentPubkeys: verifiedAgents,
-      persistentThreadAudience: const [],
+      persistentThreadAudience: persistentThreadAudience,
       threadRootEventId: rootEventId ?? parentEventId,
       recipientLoadError: memberLoadError && !isDm,
     );
@@ -240,7 +320,11 @@ class SendMessage {
         'Could not resolve agent audience. Your draft was kept.',
       );
     }
-    return result.mentionPubkeys;
+
+    return _AudienceResolution(
+      mentionPubkeys: result.mentionPubkeys,
+      explicitAgentPubkeys: explicitAgentPubkeys,
+    );
   }
 
   /// Build `e`-tags for a thread reply, matching the desktop convention:
@@ -265,6 +349,8 @@ class SendMessage {
 
 final sendMessageProvider = Provider<SendMessage>((ref) {
   final config = ref.watch(relayConfigProvider);
+  final audience = ref.watch(persistentAgentAudienceProvider.notifier);
+
   return SendMessage(
     signedEventRelay: SignedEventRelay(
       session: ref.read(relaySessionProvider.notifier),
@@ -303,5 +389,21 @@ final sendMessageProvider = Provider<SendMessage>((ref) {
       }
       return null;
     },
+    readKeepAddressedAgentsActive: audience.getEnabled,
+    readPersistentAudienceGeneration: audience.getGeneration,
+    readPersistentAudienceRevision: audience.getRevisionForScope,
+    resolveAudienceScope: getPersistentAgentAudienceScope,
+    readPersistentAudience: audience.getAudienceForScope,
+    promotePersistentAudience: audience.promotePersistentAgentAudience,
   );
 });
+
+class _AudienceResolution {
+  final List<String> mentionPubkeys;
+  final List<String> explicitAgentPubkeys;
+
+  const _AudienceResolution({
+    required this.mentionPubkeys,
+    required this.explicitAgentPubkeys,
+  });
+}

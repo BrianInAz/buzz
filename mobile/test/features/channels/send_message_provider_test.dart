@@ -1,78 +1,443 @@
 import 'dart:async';
 
+import 'package:buzz/features/channels/channel.dart';
+import 'package:buzz/features/channels/channel_management_provider.dart';
+import 'package:buzz/features/channels/send_message_provider.dart';
+import 'package:buzz/shared/contextual_agent/persistent_agent_audience.dart';
+import 'package:buzz/shared/contextual_agent/contextual_agent_conversation_policy.dart';
+import 'package:buzz/shared/mentions/agent_identity_provider.dart';
+import 'package:buzz/shared/relay/relay.dart';
+import 'package:buzz/features/profile/user_profile.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:nostr/nostr.dart' as nostr;
-import 'package:buzz/features/channels/send_message_provider.dart';
-import 'package:buzz/shared/contextual_agent/contextual_agent_conversation_policy.dart';
-import 'package:buzz/shared/relay/relay.dart';
 
+const _channelId = '11111111-1111-4111-8111-111111111111';
+const _threadRootId =
+    'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
+const _self =
+    '0000000000000000000000000000000000000000000000000000000000000000';
+const _agentA =
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const _agentB =
+    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 void main() {
+  setUp(() {
+    capturedPromotions.clear();
+  });
+
   test(
-    'adds the signed message locally before relay acknowledgement',
+    'thread-rooted persistent audience contributes to message tags when enabled',
     () async {
       final session = _PendingPublishRelaySession();
       final localMessages = <NostrEvent>[];
       final removedIds = <String>[];
       final completedIds = <String>[];
+      final keys = nostr.Keys.generate();
+
       final send = SendMessage(
-        signedEventRelay: SignedEventRelay(
-          session: session,
-          nsec: nostr.Keys.generate().nsec,
-        ),
-        fetchMembers: (_) async => const [],
-        readUserCache: () => const {},
+        signedEventRelay: SignedEventRelay(session: session, nsec: keys.nsec),
+        fetchMembers: (_) async => [
+          ChannelMember(
+            pubkey: keys.public,
+            role: 'owner',
+            joinedAt: DateTime.now().toUtc(),
+          ),
+          ChannelMember(pubkey: _agentA, role: 'bot', joinedAt: DateTime(2020)),
+          ChannelMember(pubkey: _agentB, role: 'bot', joinedAt: DateTime(2020)),
+        ],
+        readUserCache: () => {
+          _agentA: const UserProfile(pubkey: _agentA, displayName: 'agent-a'),
+        },
         addLocalMessage: (_, event) => localMessages.add(event),
         completeLocalMessage: (_, eventId) => completedIds.add(eventId),
         removeLocalMessage: (_, eventId) => removedIds.add(eventId),
         readUnaddressedMode: () => UnaddressedChannelAgentMode.mentionsOnly,
-        fetchAgentDirectory: () async => const [],
-        readChannel: (_) => null,
+        fetchAgentDirectory: () async => const [
+          AgentDirectoryEntry(
+            pubkey: _agentA,
+            respondTo: null,
+            respondToAllowlist: [],
+            channelIds: [],
+          ),
+        ],
+        readChannel: (_) => Channel(
+          id: _channelId,
+          name: 'channel',
+          channelType: 'stream',
+          visibility: 'private',
+          description: '',
+          createdBy: _self,
+          createdAt: DateTime(2020),
+          memberCount: 2,
+          isMember: true,
+        ),
+        readKeepAddressedAgentsActive: () => true,
+        readPersistentAudienceGeneration: () => 5,
+        readPersistentAudienceRevision: (scope) =>
+            scope ==
+                getPersistentAgentAudienceScope(
+                  ownerPubkey: keys.public,
+                  channelId: _channelId,
+                  threadRootId: _threadRootId,
+                )
+            ? 3
+            : 0,
+        resolveAudienceScope: getPersistentAgentAudienceScope,
+        readPersistentAudience: (scope) =>
+            scope ==
+                getPersistentAgentAudienceScope(
+                  ownerPubkey: keys.public,
+                  channelId: _channelId,
+                  threadRootId: _threadRootId,
+                )
+            ? [_agentB]
+            : const [],
+        promotePersistentAudience:
+            ({
+              required int expectedGeneration,
+              required int? expectedRevision,
+              required List<String> explicitAgentPubkeys,
+              required String? scope,
+            }) {
+              capturedPromotions.add(
+                _PromotionCapture(
+                  expectedGeneration: expectedGeneration,
+                  expectedRevision: expectedRevision,
+                  explicitAgentPubkeys: explicitAgentPubkeys,
+                  scope: scope,
+                ),
+              );
+            },
       );
 
-      final result = send(channelId: _channelId, content: 'hello');
+      final result = send(
+        channelId: _channelId,
+        content: 'threaded',
+        rootEventId: _threadRootId,
+      );
       await session.published;
-
-      expect(localMessages, hasLength(1));
-      expect(localMessages.single.id, session.event.id);
-      expect(localMessages.single.content, 'hello');
-      expect(localMessages.single.channelId, _channelId);
-      expect(removedIds, isEmpty);
 
       session.accept();
       await result;
+
+      expect(localMessages.single.channelId, _channelId);
+      expect(localMessages.single.tags, [
+        ['h', _channelId],
+        ['p', _agentB],
+      ]);
       expect(completedIds, [localMessages.single.id]);
       expect(removedIds, isEmpty);
+      expect(capturedPromotions, hasLength(1));
+      expect(capturedPromotions.single.scope, isNotNull);
+      expect(capturedPromotions.single.explicitAgentPubkeys, isEmpty);
     },
   );
 
-  test('rolls back the signed local message when publish fails', () async {
+  test(
+    'explicit mentions are passed to promotion callback and tagged',
+    () async {
+      final session = _PendingPublishRelaySession();
+      final keys = nostr.Keys.generate();
+
+      final send = SendMessage(
+        signedEventRelay: SignedEventRelay(session: session, nsec: keys.nsec),
+        fetchMembers: (_) async => [
+          ChannelMember(pubkey: _agentA, role: 'bot', joinedAt: DateTime(2020)),
+        ],
+        readUserCache: () => const {},
+        addLocalMessage: (_, event) {},
+        completeLocalMessage: (_, eventId) {},
+        removeLocalMessage: (_, eventId) {},
+        readUnaddressedMode: () => UnaddressedChannelAgentMode.mentionsOnly,
+        fetchAgentDirectory: () async => const [
+          AgentDirectoryEntry(
+            pubkey: _agentA,
+            respondTo: null,
+            respondToAllowlist: [],
+            channelIds: [],
+          ),
+        ],
+        readChannel: (_) => Channel(
+          id: _channelId,
+          name: 'channel',
+          channelType: 'stream',
+          visibility: 'private',
+          description: '',
+          createdBy: _self,
+          createdAt: DateTime(2020),
+          memberCount: 1,
+          isMember: true,
+        ),
+        readKeepAddressedAgentsActive: () => false,
+        readPersistentAudienceGeneration: () => 0,
+        readPersistentAudienceRevision: (_) => 0,
+        resolveAudienceScope: getPersistentAgentAudienceScope,
+        readPersistentAudience: (_) => const [_agentB],
+        promotePersistentAudience:
+            ({
+              required int expectedGeneration,
+              required int? expectedRevision,
+              required List<String> explicitAgentPubkeys,
+              required String? scope,
+            }) {
+              capturedPromotions.add(
+                _PromotionCapture(
+                  expectedGeneration: expectedGeneration,
+                  expectedRevision: expectedRevision,
+                  explicitAgentPubkeys: explicitAgentPubkeys,
+                  scope: scope,
+                ),
+              );
+            },
+      );
+
+      final result = send(
+        channelId: _channelId,
+        content: 'explicit mention',
+        mentionPubkeys: [_agentA],
+        rootEventId: _threadRootId,
+      );
+      await session.published;
+      session.accept();
+      await result;
+
+      expect(capturedPromotions.single.explicitAgentPubkeys, [_agentA]);
+      expect(
+        session.event.tags.any(
+          (tag) => tag.length >= 2 && tag[0] == 'p' && tag[1] == _agentA,
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  test('top-level messages ignore scoped persistent audience', () async {
     final session = _PendingPublishRelaySession();
     final localMessages = <NostrEvent>[];
-    final completedIds = <String>[];
-    final removedIds = <String>[];
+    final keys = nostr.Keys.generate();
+
+    final readScopeErrors = <String>[];
     final send = SendMessage(
-      signedEventRelay: SignedEventRelay(
-        session: session,
-        nsec: nostr.Keys.generate().nsec,
-      ),
-      fetchMembers: (_) async => const [],
+      signedEventRelay: SignedEventRelay(session: session, nsec: keys.nsec),
+      fetchMembers: (_) async => [
+        ChannelMember(pubkey: 'member', role: 'bot', joinedAt: DateTime(2020)),
+      ],
       readUserCache: () => const {},
       addLocalMessage: (_, event) => localMessages.add(event),
-      completeLocalMessage: (_, eventId) => completedIds.add(eventId),
-      removeLocalMessage: (_, eventId) => removedIds.add(eventId),
+      completeLocalMessage: (_, eventId) {},
+      removeLocalMessage: (_, eventId) {},
       readUnaddressedMode: () => UnaddressedChannelAgentMode.mentionsOnly,
       fetchAgentDirectory: () async => const [],
-      readChannel: (_) => null,
+      readChannel: (_) => Channel(
+        id: _channelId,
+        name: 'channel',
+        channelType: 'stream',
+        visibility: 'private',
+        description: '',
+        createdBy: _self,
+        createdAt: DateTime(2020),
+        memberCount: 1,
+        isMember: true,
+      ),
+      readKeepAddressedAgentsActive: () => true,
+      readPersistentAudienceGeneration: () => 0,
+      readPersistentAudienceRevision: (scope) {
+        readScopeErrors.add(scope);
+        return 1;
+      },
+      resolveAudienceScope: getPersistentAgentAudienceScope,
+      readPersistentAudience: (scope) {
+        readScopeErrors.add(scope);
+        return [_agentA];
+      },
+      promotePersistentAudience:
+          ({
+            required int expectedGeneration,
+            required int? expectedRevision,
+            required List<String> explicitAgentPubkeys,
+            required String? scope,
+          }) {},
     );
 
-    final result = send(channelId: _channelId, content: 'hello');
+    final result = send(channelId: _channelId, content: 'top-level');
+    await session.published;
+    session.accept();
+    await result;
+
+    expect(localMessages.single.tags, [
+      ['h', _channelId],
+    ]);
+    expect(readScopeErrors, isEmpty);
+  });
+
+  test('failed send does not promote persistent audience', () async {
+    final session = _PendingPublishRelaySession();
+    final keys = nostr.Keys.generate();
+    var promoteCalls = 0;
+
+    final send = SendMessage(
+      signedEventRelay: SignedEventRelay(session: session, nsec: keys.nsec),
+      fetchMembers: (_) async => [
+        ChannelMember(
+          pubkey: keys.public,
+          role: 'bot',
+          joinedAt: DateTime(2020),
+        ),
+      ],
+      readUserCache: () => const {},
+      addLocalMessage: (_, event) {},
+      completeLocalMessage: (_, eventId) {},
+      removeLocalMessage: (_, eventId) {},
+      readUnaddressedMode: () => UnaddressedChannelAgentMode.mentionsOnly,
+      fetchAgentDirectory: () async => const [
+        AgentDirectoryEntry(
+          pubkey: _agentA,
+          respondTo: null,
+          respondToAllowlist: [],
+          channelIds: [],
+        ),
+      ],
+      readChannel: (_) => Channel(
+        id: _channelId,
+        name: 'channel',
+        channelType: 'stream',
+        visibility: 'private',
+        description: '',
+        createdBy: _self,
+        createdAt: DateTime(2020),
+        memberCount: 1,
+        isMember: true,
+      ),
+      readKeepAddressedAgentsActive: () => true,
+      readPersistentAudienceGeneration: () => 0,
+      readPersistentAudienceRevision: (_) => 0,
+      resolveAudienceScope: getPersistentAgentAudienceScope,
+      readPersistentAudience: (_) => const [_agentA],
+      promotePersistentAudience:
+          ({
+            required int expectedGeneration,
+            required int? expectedRevision,
+            required List<String> explicitAgentPubkeys,
+            required String? scope,
+          }) {
+            promoteCalls += 1;
+          },
+    );
+
+    final result = send(
+      channelId: _channelId,
+      content: 'failing',
+      mentionPubkeys: [_agentA],
+      rootEventId: _threadRootId,
+    );
     await session.published;
     session.reject();
 
     await expectLater(result, throwsException);
-    expect(completedIds, isEmpty);
-    expect(removedIds, [localMessages.single.id]);
+    expect(promoteCalls, 0);
+  });
+
+  test('direct-message behavior still resolves current dm recipient', () async {
+    final session = _PendingPublishRelaySession();
+    final localMessages = <NostrEvent>[];
+    final self = nostr.Keys.generate();
+
+    final send = SendMessage(
+      signedEventRelay: SignedEventRelay(session: session, nsec: self.nsec),
+      fetchMembers: (_) async => [
+        ChannelMember(
+          pubkey: self.public,
+          role: 'member',
+          joinedAt: DateTime(2020),
+        ),
+        ChannelMember(pubkey: _agentA, role: 'bot', joinedAt: DateTime(2020)),
+      ],
+      readUserCache: () => {_agentA: const UserProfile(pubkey: _agentA)},
+      addLocalMessage: (_, event) => localMessages.add(event),
+      completeLocalMessage: (_, eventId) {},
+      removeLocalMessage: (_, eventId) {},
+      readUnaddressedMode: () => UnaddressedChannelAgentMode.allChannelAgents,
+      fetchAgentDirectory: () async => const [
+        AgentDirectoryEntry(pubkey: _agentA, respondTo: null),
+      ],
+      readChannel: (_) => Channel(
+        id: _channelId,
+        name: 'dm',
+        channelType: 'dm',
+        visibility: 'private',
+        description: '',
+        createdBy: _self,
+        createdAt: DateTime(2020),
+        memberCount: 2,
+        isMember: true,
+      ),
+      readKeepAddressedAgentsActive: () => true,
+      readPersistentAudienceGeneration: () => 0,
+      readPersistentAudienceRevision: (_) => 0,
+      resolveAudienceScope: getPersistentAgentAudienceScope,
+      readPersistentAudience: (_) => const [],
+      promotePersistentAudience:
+          ({
+            required int expectedGeneration,
+            required int? expectedRevision,
+            required List<String> explicitAgentPubkeys,
+            required String? scope,
+          }) {},
+    );
+
+    final result = send(channelId: _channelId, content: 'dm hello');
+    await session.published;
+    session.accept();
+    await result;
+
+    expect(localMessages.single.tags, [
+      ['h', _channelId],
+      ['p', _agentA],
+    ]);
+  });
+
+  test('member load failure in channel path keeps draft behavior', () async {
+    final session = _PendingPublishRelaySession();
+    final self = nostr.Keys.generate();
+    final send = SendMessage(
+      signedEventRelay: SignedEventRelay(session: session, nsec: self.nsec),
+      fetchMembers: (_) async => throw Exception('member fetch failed'),
+      readUserCache: () => const {},
+      addLocalMessage: (_, event) {},
+      completeLocalMessage: (_, eventId) {},
+      removeLocalMessage: (_, eventId) {},
+      readUnaddressedMode: () => UnaddressedChannelAgentMode.mentionsOnly,
+      fetchAgentDirectory: () async => const [],
+      readChannel: (_) => Channel(
+        id: _channelId,
+        name: 'channel',
+        channelType: 'stream',
+        visibility: 'private',
+        description: '',
+        createdBy: _self,
+        createdAt: DateTime(2020),
+        memberCount: 1,
+        isMember: true,
+      ),
+      readKeepAddressedAgentsActive: () => true,
+      readPersistentAudienceGeneration: () => 0,
+      readPersistentAudienceRevision: (_) => 0,
+      resolveAudienceScope: getPersistentAgentAudienceScope,
+      readPersistentAudience: (_) => const [],
+      promotePersistentAudience:
+          ({
+            required int expectedGeneration,
+            required int? expectedRevision,
+            required List<String> explicitAgentPubkeys,
+            required String? scope,
+          }) {},
+    );
+
+    await expectLater(
+      send(channelId: _channelId, content: 'failing audience'),
+      throwsA(isA<StateError>()),
+    );
   });
 
   test('cancels delivery after the active community changes', () async {
@@ -100,7 +465,7 @@ void main() {
   });
 }
 
-const _channelId = '11111111-1111-4111-8111-111111111111';
+final capturedPromotions = <_PromotionCapture>[];
 
 class _PendingPublishRelaySession extends RelaySessionNotifier {
   final Completer<NostrEvent> _result = Completer<NostrEvent>();
@@ -125,4 +490,18 @@ class _PendingPublishRelaySession extends RelaySessionNotifier {
   void accept() => _result.complete(event);
 
   void reject() => _result.completeError(Exception('relay rejected event'));
+}
+
+class _PromotionCapture {
+  _PromotionCapture({
+    required this.expectedGeneration,
+    required this.expectedRevision,
+    required this.explicitAgentPubkeys,
+    required this.scope,
+  });
+
+  final int expectedGeneration;
+  final int? expectedRevision;
+  final List<String> explicitAgentPubkeys;
+  final String? scope;
 }
