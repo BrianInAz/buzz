@@ -38,8 +38,16 @@ function assertDecision(actual, expected, caseId) {
     expected.replyPlacement,
     `${caseId}: replyPlacement`,
   );
-  assert.equal(actual.sharedThread, expected.sharedThread, `${caseId}: sharedThread`);
-  assert.equal(actual.retainDraft, expected.retainDraft, `${caseId}: retainDraft`);
+  assert.equal(
+    actual.sharedThread,
+    expected.sharedThread,
+    `${caseId}: sharedThread`,
+  );
+  assert.equal(
+    actual.retainDraft,
+    expected.retainDraft,
+    `${caseId}: retainDraft`,
+  );
   if (expected.nestUnderAgentReply !== undefined) {
     assert.equal(
       actual.nestUnderAgentReply ?? false,
