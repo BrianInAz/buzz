@@ -19,12 +19,21 @@ test("storage key matches fixture contract", () => {
 test("default mode is all-channel-agents", () => {
   assert.equal(DEFAULT_UNADDRESSED_CHANNEL_AGENT_MODE, "all-channel-agents");
   assert.equal(parseUnaddressedChannelAgentMode(null), "all-channel-agents");
-  assert.equal(parseUnaddressedChannelAgentMode("garbage"), "all-channel-agents");
+  assert.equal(
+    parseUnaddressedChannelAgentMode("garbage"),
+    "all-channel-agents",
+  );
 });
 
 test("parse accepts both modes", () => {
-  assert.equal(parseUnaddressedChannelAgentMode("all-channel-agents"), "all-channel-agents");
-  assert.equal(parseUnaddressedChannelAgentMode("mentions-only"), "mentions-only");
+  assert.equal(
+    parseUnaddressedChannelAgentMode("all-channel-agents"),
+    "all-channel-agents",
+  );
+  assert.equal(
+    parseUnaddressedChannelAgentMode("mentions-only"),
+    "mentions-only",
+  );
 });
 
 test("read/write round-trip via mock storage", () => {
