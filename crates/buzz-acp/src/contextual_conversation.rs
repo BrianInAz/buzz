@@ -95,7 +95,10 @@ fn filter_to_eligible(candidates: &[String], eligible: &BTreeSet<String>) -> Vec
     )
 }
 
-fn placement_for(input: &ContextualAgentConversationInput, audience_count: usize) -> ReplyPlacement {
+fn placement_for(
+    input: &ContextualAgentConversationInput,
+    audience_count: usize,
+) -> ReplyPlacement {
     if input.message_position == "in-thread" {
         if let Some(root) = input.thread_root_event_id.as_ref() {
             return ReplyPlacement::ThreadRoot {
@@ -317,10 +320,7 @@ mod tests {
         };
         ContextualAgentConversationInput {
             conversation: value["conversation"].as_str().unwrap_or("").to_string(),
-            message_position: value["messagePosition"]
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
+            message_position: value["messagePosition"].as_str().unwrap_or("").to_string(),
             sender_class: value["senderClass"].as_str().unwrap_or("").to_string(),
             unaddressed_mode: mode,
             keep_addressed_agents_active: value["keepAddressedAgentsActive"]
