@@ -13,6 +13,7 @@ import {
 import { resolvePersonaRuntime } from "@/features/agents/lib/resolvePersonaRuntime";
 import { useAddChannelMembersMutation } from "@/features/channels/hooks";
 import { filterEffectiveExplicitAgentPubkeys } from "@/features/messages/lib/effectiveExplicitAgentPubkeys";
+import type { ComposerSendAudienceResult } from "@/features/messages/lib/composerSendAudience";
 import type { UseChannelLinksResult } from "@/features/messages/lib/useChannelLinks";
 import type { UseEmojiAutocompleteResult } from "@/features/messages/lib/useEmojiAutocomplete";
 import {
@@ -108,6 +109,16 @@ type UseMentionSendFlowOptions = {
     explicitAgentPubkeys: string[];
   }) => void;
   resolvePostSendContent?: (effectiveExplicitAgentPubkeys: string[]) => string;
+  /**
+   * Optional contextual-agent audience resolver. When provided, merges
+   * implicit channel-agent audience into the outgoing p-tag set.
+   */
+  resolveComposerAudience?: (input: {
+    explicitMentionPubkeys: string[];
+    explicitAgentPubkeys: string[];
+    messagePosition: "top-level" | "in-thread";
+    threadRootEventId: string | null;
+  }) => ComposerSendAudienceResult;
 };
 
 function mergeOutgoingTagsWithReferenceMentions(
@@ -164,6 +175,7 @@ export function useMentionSendFlow({
   setSpoileredAttachmentUrls,
   onSuccessfulExplicitAgentAudience,
   resolvePostSendContent,
+  resolveComposerAudience,
 }: UseMentionSendFlowOptions) {
   const [pendingNonMemberSend, setPendingNonMemberSend] =
     React.useState<PendingNonMemberMentionSend | null>(null);
@@ -702,7 +714,34 @@ export function useMentionSendFlow({
             mentions.isAgentPubkey(pubkey) ||
             createdPersonaAgentPubkeySet.has(pubkey),
         );
-        const pubkeys = explicitMentionPubkeys;
+        const messagePosition =
+          capturedThreadContext?.parentEventId ||
+          capturedThreadContext?.threadHeadId
+            ? "in-thread"
+            : "top-level";
+        const threadRootEventId =
+          capturedThreadContext?.threadHeadId ??
+          capturedThreadContext?.parentEventId ??
+          null;
+        const audienceDecision = resolveComposerAudience?.({
+          explicitMentionPubkeys,
+          explicitAgentPubkeys,
+          messagePosition,
+          threadRootEventId,
+        });
+        if (audienceDecision?.retainDraft) {
+          setNonMemberPromptError(
+            "Could not resolve agent audience. Your draft was kept.",
+          );
+          toast.error("Could not resolve agent audience. Your draft was kept.");
+          return;
+        }
+        const pubkeys = audienceDecision
+          ? uniqueNormalizedPubkeys([
+              ...audienceDecision.mentionPubkeys,
+              ...createdPersonaAgentPubkeys,
+            ])
+          : explicitMentionPubkeys;
         const { content: finalContent, mediaTags } = buildOutgoingMessage(
           trimmed,
           pendingImeta,
@@ -776,6 +815,7 @@ export function useMentionSendFlow({
       mentions.isAgentPubkey,
       mentions.isManagedAgentPubkey,
       onPrepareSendChannel,
+      resolveComposerAudience,
     ],
   );
 
