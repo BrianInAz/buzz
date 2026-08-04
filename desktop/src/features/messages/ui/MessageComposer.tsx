@@ -24,7 +24,10 @@ import { useAttachmentEditing } from "@/features/messages/lib/useAttachmentEditi
 import { useMediaUpload } from "@/features/messages/lib/useMediaUpload";
 import { useMentions } from "@/features/messages/lib/useMentions";
 import { diffAddedMentionPubkeys } from "@/features/messages/lib/threading";
-import { getPersistentAgentAudienceScope } from "@/features/messages/lib/persistentAgentAudience";
+import {
+  getPersistentAgentAudienceRevision,
+  getPersistentAgentAudienceScope,
+} from "@/features/messages/lib/persistentAgentAudience";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import {
   hasMentionClipboardHtml,
@@ -294,7 +297,6 @@ function MessageComposerImpl({
     audienceChips,
     composerAudienceHint,
     audienceGeneration,
-    audienceRevision,
     resolveComposerAudience,
     onSuccessfulExplicitAgentAudience,
     removeAudienceMember,
@@ -614,7 +616,12 @@ function MessageComposerImpl({
         spoileredAttachmentUrls,
         trimmed,
         audienceGeneration,
-        audienceRevision: audienceScope ? audienceRevision : null,
+        // Snapshot the store revision at submit time. A chip removal may have
+        // happened in the current event turn, before React re-renders this
+        // composer; a later removal still advances the revision and wins.
+        audienceRevision: audienceScope
+          ? getPersistentAgentAudienceRevision(audienceScope)
+          : null,
       });
     } finally {
       endSubmit();
@@ -640,7 +647,6 @@ function MessageComposerImpl({
     onPreparingMentionSendChange,
     audienceScope,
     audienceGeneration,
-    audienceRevision,
     beginSubmit,
     endSubmit,
   ]);
