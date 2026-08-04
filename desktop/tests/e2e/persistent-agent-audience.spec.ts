@@ -388,7 +388,7 @@ test("manual audience exclusions can be re-added with @agent selection", async (
     AGENT_B,
     AGENT_A,
   ]);
-  await expect.poll(() => readAudience(page)).toEqual([AGENT_B, AGENT_A]);
+  await expect.poll(() => readAudience(page)).toEqual([AGENT_A, AGENT_B]);
 });
 
 test("persistent removals stay removed across composer scope transitions", async ({
