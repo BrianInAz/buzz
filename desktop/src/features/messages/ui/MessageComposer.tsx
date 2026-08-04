@@ -52,13 +52,13 @@ import {
 import { ComposerDockToolbar } from "./ComposerDockToolbar";
 import { NonMemberMentionDialog } from "./NonMemberMentionDialog";
 import { ComposerAudienceHint } from "./ComposerAudienceHint";
+import { ComposerAudienceChips } from "./ComposerAudienceChips";
 import { useComposerAgentAudience } from "./useComposerAgentAudience";
 import { useMentionSendFlow } from "./useMentionSendFlow";
 import { usePersistentAgentMentionHydration } from "./usePersistentAgentMentionHydration";
 import { useComposerContentState } from "./useComposerContentState";
 import { useDraftPersistLifecycle } from "./useDraftPersistSnapshot";
 import type { MessageComposerProps } from "./MessageComposer.types";
-
 function MessageComposerImpl({
   audienceContext = null,
   channelId = null,
@@ -218,7 +218,6 @@ function MessageComposerImpl({
     ((info: LinkSelectionInfo | null) => void) | null
   >(null);
   const onLinkShortcutRef = React.useRef<(() => boolean) | null>(null);
-
   const scrollComposerToBottom = React.useCallback(() => {
     window.requestAnimationFrame(() => {
       const scrollElement = composerScrollRef.current;
@@ -226,7 +225,6 @@ function MessageComposerImpl({
       scrollElement.scrollTop = scrollElement.scrollHeight;
     });
   }, []);
-
   const computedPlaceholder = editTarget
     ? "Edit your message"
     : (placeholder ??
@@ -291,24 +289,26 @@ function MessageComposerImpl({
     persistentMentionHydration,
   );
   persistentMentionHydrationRef.current = persistentMentionHydration;
-
+  const { beginSubmit, endSubmit } = persistentMentionHydration;
   const {
+    audienceChips,
     composerAudienceHint,
     audienceGeneration,
     audienceRevision,
     resolveComposerAudience,
     onSuccessfulExplicitAgentAudience,
+    removeAudienceMember,
     resolvePostSendContent,
   } = useComposerAgentAudience({
     audienceThreadRootId,
     channelType,
+    composerScope: effectiveDraftKey,
     editTarget,
     mentions,
     ownerPubkey,
     persistentMentionHydration,
     richText,
   });
-
   const mentionSendFlow = useMentionSendFlow({
     channelId,
     channelLinks,
@@ -515,7 +515,6 @@ function MessageComposerImpl({
 
   const submitMessage = React.useCallback(async () => {
     const trimmed = syncComposerContentFromEditor().trim();
-
     if (editTargetRef.current && onEditSaveRef.current) {
       if (isSendingRef.current || isUploadingRef.current) return;
       const currentPendingImeta = media.pendingImetaRef.current;
@@ -602,7 +601,7 @@ function MessageComposerImpl({
     }
 
     onPreparingMentionSendChange?.(true);
-    persistentMentionHydration.beginSubmit();
+    beginSubmit();
     try {
       await mentionSendFlow.sendMessageWithMentionFlow({
         capturedChannelId: channelId,
@@ -618,7 +617,7 @@ function MessageComposerImpl({
         audienceRevision: audienceScope ? audienceRevision : null,
       });
     } finally {
-      persistentMentionHydration.endSubmit();
+      endSubmit();
       onPreparingMentionSendChange?.(false);
     }
   }, [
@@ -642,7 +641,8 @@ function MessageComposerImpl({
     audienceScope,
     audienceGeneration,
     audienceRevision,
-    persistentMentionHydration,
+    beginSubmit,
+    endSubmit,
   ]);
   submitMessageRef.current = submitMessage;
 
@@ -953,9 +953,11 @@ function MessageComposerImpl({
                 </button>
               </div>
             ) : null}
-
+            <ComposerAudienceChips
+              audience={audienceChips}
+              onRemove={removeAudienceMember}
+            />
             <ComposerAudienceHint hint={composerAudienceHint} />
-
             {(media.pendingImeta.length > 0 || media.isUploading) && (
               <div className="mb-2 flex items-center gap-2">
                 <ComposerAttachments
@@ -973,7 +975,6 @@ function MessageComposerImpl({
                 />
               </div>
             )}
-
             {/* biome-ignore lint/a11y/noStaticElementInteractions: keydown handler bridges Tiptap editor to autocomplete and submit */}
             <div
               className="rich-text-composer relative max-h-32 overflow-y-auto"
@@ -983,7 +984,6 @@ function MessageComposerImpl({
             >
               <EditorContent editor={richText.editor} />
             </div>
-
             <ComposerDockToolbar
               layoutMode={layoutMode}
               composerDisabled={disabled}

@@ -3,13 +3,14 @@ import { expect, test, type Page } from "@playwright/test";
 import { waitForAnimations } from "../helpers/animations";
 import { installMockBridge } from "../helpers/bridge";
 
-const SHOTS = "test-results/persistent-agent-audience";
+const SHOTS = "test-results/persistent-agent-audience-removable-chips";
 const OWNER = "deadbeef".repeat(8);
 const CHANNEL_ID = "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50";
 const AGENT_A = "a".repeat(64);
 const AGENT_B = "b".repeat(64);
 const THREAD_ROOT_ID = "mock-general-welcome";
 const SCOPE = `${OWNER}:${CHANNEL_ID}:thread:${THREAD_ROOT_ID}`;
+const AUDIENCES_STORAGE_KEY = "buzz:persistent-agent-audiences:v2";
 
 async function seedAudience(page: Page, pubkeys: string[], theme = "buzz") {
   await page.addInitScript(
@@ -98,12 +99,15 @@ async function installAudienceFixtures(
 }
 
 async function readAudience(page: Page, scope = SCOPE) {
-  return page.evaluate(({ storageKey, targetScope }) => {
-    const payload = JSON.parse(
-      window.localStorage.getItem(storageKey) ?? "{}",
-    );
-    return payload[targetScope] ?? [];
-  }, { storageKey, targetScope: scope });
+  return page.evaluate(
+    ({ storageKey, targetScope }) => {
+      const payload = JSON.parse(
+        window.localStorage.getItem(storageKey) ?? "{}",
+      );
+      return payload[targetScope] ?? [];
+    },
+    { storageKey: AUDIENCES_STORAGE_KEY, targetScope: scope },
+  );
 }
 
 test("first thread open inherits explicitly addressed agents in authored order", async ({
@@ -297,8 +301,12 @@ test("persistent audience renders removable agent chips above the composer", asy
   await expect(chips).toBeVisible();
   await expect(chips.getByText("Morgarita")).toBeVisible();
   await expect(chips.getByText("Vogue")).toBeVisible();
-  await expect(chips.getByRole("button", { name: /remove morgarita/i })).toBeVisible();
-  await expect(chips.getByRole("button", { name: /remove vogue/i })).toBeVisible();
+  await expect(
+    chips.getByRole("button", { name: /remove morgarita/i }),
+  ).toBeVisible();
+  await expect(
+    chips.getByRole("button", { name: /remove vogue/i }),
+  ).toBeVisible();
 });
 
 test("removing an audience chip updates draft mentions and persisted audience", async ({
@@ -318,9 +326,7 @@ test("removing an audience chip updates draft mentions and persisted audience", 
     .click();
 
   await expect(input).toHaveText("@Vogue ");
-  await expect
-    .poll(() => readAudience(page))
-    .toEqual([AGENT_B]);
+  await expect.poll(() => readAudience(page)).toEqual([AGENT_B]);
 });
 
 test("manual audience exclusions can be re-added with @agent selection", async ({
@@ -341,17 +347,19 @@ test("manual audience exclusions can be re-added with @agent selection", async (
   await expect(input).toHaveText("@Vogue ");
 
   await input.focus();
-  await input.pressSequentially("@Morg");
+  await input.pressSequentially("@Morg ");
+  await expect(input).toHaveText(/@Morg\s+@Vogue\s*$/);
+  await expect.poll(() => readAudience(page)).toEqual([AGENT_B]);
   await composer
     .getByTestId("mention-autocomplete")
     .getByText("Morgarita", { exact: true })
     .click();
-  await expect(input).toHaveText("@Vogue @Morgarita ");
+  await expect(input).toContainText("@Morgarita");
+  await expect(input).toContainText("@Vogue");
+  await expect.poll(() => readAudience(page)).toEqual([AGENT_B]);
   await input.pressSequentially("hello");
   await composer.getByTestId("send-message").click();
-  await expect
-    .poll(() => readAudience(page))
-    .toEqual([AGENT_B, AGENT_A]);
+  await expect.poll(() => readAudience(page)).toEqual([AGENT_B, AGENT_A]);
 });
 
 test("persistent removals stay removed across composer scope transitions", async ({
@@ -372,7 +380,9 @@ test("persistent removals stay removed across composer scope transitions", async
   await expect(threadInput).toHaveText("@Vogue ");
 
   await openGeneral(page);
-  await expect(channelComposer(page).getByTestId("message-input")).toHaveText("");
+  await expect(channelComposer(page).getByTestId("message-input")).toHaveText(
+    "",
+  );
 
   await openThread(page);
   await expect(threadComposer(page).getByTestId("message-input")).toHaveText(
@@ -385,7 +395,9 @@ test("persistent removals stay removed across composer scope transitions", async
   ).toHaveCount(0);
 });
 
-test("native persistent mentions fit the narrow composer", async ({ page }) => {
+test("removed persistent audience fits the narrow composer", async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 700, height: 760 });
   await seedAudience(page, [AGENT_A, AGENT_B]);
   await installAudienceFixtures(page);
@@ -395,6 +407,13 @@ test("native persistent mentions fit the narrow composer", async ({ page }) => {
   await expect(overlay.getByTestId("message-input")).toContainText(
     "@Morgarita",
   );
+  await overlay
+    .getByTestId("composer-audience-chips")
+    .getByRole("button", { name: /remove morgarita/i })
+    .click();
+  await expect(overlay.getByTestId("message-input")).toHaveText("@Vogue ");
   await waitForAnimations(page);
-  await composer.screenshot({ path: `${SHOTS}/narrow-native-mentions.png` });
+  await composer.screenshot({
+    path: `${SHOTS}/narrow-removed-audience-chip.png`,
+  });
 });
