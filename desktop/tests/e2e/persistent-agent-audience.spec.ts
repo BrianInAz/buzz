@@ -340,21 +340,21 @@ test("manual audience exclusions can be re-added with @agent selection", async (
     .click();
   await expect(input).toHaveText("@Vogue ");
 
-  await input.fill("@Morg");
+  await input.focus();
+  await input.pressSequentially("@Morg");
   await composer
     .getByTestId("mention-autocomplete")
     .getByText("Morgarita", { exact: true })
     .click();
-  await expect(input).toContainText("@Morgarita");
-  await expect(input).toContainText("@Vogue");
+  await expect(input).toHaveText("@Vogue @Morgarita ");
+  await input.pressSequentially("hello");
+  await composer.getByTestId("send-message").click();
   await expect
-    .poll(() =>
-      readAudience(page).then((pubkeys) => [...new Set(pubkeys)]),
-    )
-    .toEqual([AGENT_A, AGENT_B]);
+    .poll(() => readAudience(page))
+    .toEqual([AGENT_B, AGENT_A]);
 });
 
-test("manual audience exclusions reset across composer scope transitions", async ({
+test("persistent removals stay removed across composer scope transitions", async ({
   page,
 }) => {
   await seedAudience(page, [AGENT_A, AGENT_B]);
@@ -376,8 +376,13 @@ test("manual audience exclusions reset across composer scope transitions", async
 
   await openThread(page);
   await expect(threadComposer(page).getByTestId("message-input")).toHaveText(
-    "@Morgarita @Vogue ",
+    "@Vogue ",
   );
+  await expect(
+    threadComposer(page)
+      .getByTestId("composer-audience-chips")
+      .getByText("Morgarita"),
+  ).toHaveCount(0);
 });
 
 test("native persistent mentions fit the narrow composer", async ({ page }) => {

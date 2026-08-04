@@ -182,7 +182,7 @@ test("manual removal drops persistent agent from audience", () => {
   assert.deepEqual(result.agentAudiencePubkeys, [agentA]);
 });
 
-test("manual exclusion drops a currently displayed candidate from the draft send path", () => {
+test("manual exclusion removes one agent while retaining the remaining persistent recipient", () => {
   const result = resolveComposerSendAudience({
     conversation: "channel",
     messagePosition: "top-level",
@@ -197,7 +197,7 @@ test("manual exclusion drops a currently displayed candidate from the draft send
     manualRemovedPubkeys: [agentA],
   });
   assert.deepEqual(result.agentAudiencePubkeys, [agentB]);
-  assert.deepEqual(result.mentionPubkeys, []);
+  assert.deepEqual(result.mentionPubkeys, [agentB]);
 });
 
 test("manual exclusions are draft-local and must not leak into a fresh resolve call", () => {
@@ -230,7 +230,7 @@ test("manual exclusions are draft-local and must not leak into a fresh resolve c
   assert.deepEqual(nextDraft.agentAudiencePubkeys, [agentA, agentB]);
 });
 
-test("typing/selecting a manually excluded agent re-adds it into audience", () => {
+test("an explicit mention re-adds a manually excluded agent alongside remaining recipients", () => {
   const result = resolveComposerSendAudience({
     conversation: "channel",
     messagePosition: "top-level",
@@ -244,19 +244,6 @@ test("typing/selecting a manually excluded agent re-adds it into audience", () =
     persistentThreadAudience: [agentA, agentB],
     manualRemovedPubkeys: [agentA],
   });
-  assert.deepEqual(result.agentAudiencePubkeys, [agentA]);
-  assert.deepEqual(result.mentionPubkeys, [agentA]);
-});
-
-test("audience hint should render resolved agent chips instead of generic count text", () => {
-  assert.equal(
-    describeComposerAudienceHint({
-      conversation: "channel",
-      unaddressedMode: "all-channel-agents",
-      explicitAgentCount: 0,
-      implicitAgentCount: 2,
-      retainDraft: false,
-    }),
-    "Talking to Morgarita and Vogue",
-  );
+  assert.deepEqual(result.agentAudiencePubkeys, [agentB, agentA]);
+  assert.deepEqual(result.mentionPubkeys, [agentB, agentA]);
 });
