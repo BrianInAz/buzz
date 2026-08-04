@@ -110,6 +110,45 @@ async function readAudience(page: Page, scope = SCOPE) {
   );
 }
 
+async function readLatestOutgoingMentionPubkeys(page: Page) {
+  return page.evaluate(() => {
+    const entries =
+      (
+        window as Window & {
+          __BUZZ_E2E_COMMAND_LOG__?: Array<{
+            command: string;
+            payload: unknown;
+          }>;
+        }
+      ).__BUZZ_E2E_COMMAND_LOG__ ?? [];
+
+    for (const entry of entries.toReversed()) {
+      if (entry.command !== "plugin:websocket|send") continue;
+      const data = (
+        entry.payload as { message?: { data?: string } } | undefined
+      )?.message?.data;
+      if (!data) continue;
+
+      try {
+        const frame = JSON.parse(data) as [
+          string,
+          { tags?: string[][] },
+        ];
+        if (frame[0] !== "EVENT") continue;
+        return (
+          frame[1].tags
+            ?.filter((tag) => tag[0] === "p")
+            .map((tag) => tag[1]) ?? []
+        );
+      } catch {
+        // Ignore non-event mock websocket frames.
+      }
+    }
+
+    return null;
+  });
+}
+
 test("first thread open inherits explicitly addressed agents in authored order", async ({
   page,
 }) => {
@@ -359,6 +398,10 @@ test("manual audience exclusions can be re-added with @agent selection", async (
   await expect.poll(() => readAudience(page)).toEqual([AGENT_B]);
   await input.pressSequentially("hello");
   await composer.getByTestId("send-message").click();
+  await expect.poll(() => readLatestOutgoingMentionPubkeys(page)).toEqual([
+    AGENT_B,
+    AGENT_A,
+  ]);
   await expect.poll(() => readAudience(page)).toEqual([AGENT_B, AGENT_A]);
 });
 
