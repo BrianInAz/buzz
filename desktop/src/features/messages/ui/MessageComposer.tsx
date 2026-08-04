@@ -24,10 +24,7 @@ import { useAttachmentEditing } from "@/features/messages/lib/useAttachmentEditi
 import { useMediaUpload } from "@/features/messages/lib/useMediaUpload";
 import { useMentions } from "@/features/messages/lib/useMentions";
 import { diffAddedMentionPubkeys } from "@/features/messages/lib/threading";
-import {
-  getPersistentAgentAudienceRevision,
-  getPersistentAgentAudienceScope,
-} from "@/features/messages/lib/persistentAgentAudience";
+import { getPersistentAgentAudienceScope } from "@/features/messages/lib/persistentAgentAudience";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import {
   hasMentionClipboardHtml,
@@ -292,7 +289,8 @@ function MessageComposerImpl({
     persistentMentionHydration,
   );
   persistentMentionHydrationRef.current = persistentMentionHydration;
-  const { beginSubmit, endSubmit } = persistentMentionHydration;
+  const { beginSubmit, endSubmit, getAudienceRevision } =
+    persistentMentionHydration;
   const {
     audienceChips,
     composerAudienceHint,
@@ -616,12 +614,7 @@ function MessageComposerImpl({
         spoileredAttachmentUrls,
         trimmed,
         audienceGeneration,
-        // Snapshot the store revision at submit time. A chip removal may have
-        // happened in the current event turn, before React re-renders this
-        // composer; a later removal still advances the revision and wins.
-        audienceRevision: audienceScope
-          ? getPersistentAgentAudienceRevision(audienceScope)
-          : null,
+        audienceRevision: getAudienceRevision(),
       });
     } finally {
       endSubmit();
@@ -645,10 +638,10 @@ function MessageComposerImpl({
     syncComposerContentFromEditor,
     onCaptureSendContext,
     onPreparingMentionSendChange,
-    audienceScope,
     audienceGeneration,
     beginSubmit,
     endSubmit,
+    getAudienceRevision,
   ]);
   submitMessageRef.current = submitMessage;
 

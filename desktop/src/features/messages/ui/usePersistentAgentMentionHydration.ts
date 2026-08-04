@@ -1,7 +1,10 @@
 import * as React from "react";
 
 import { getMentionOffset } from "@/features/messages/lib/hasMention";
-import { usePersistentAgentAudience } from "@/features/messages/lib/persistentAgentAudience";
+import {
+  getPersistentAgentAudienceRevision,
+  usePersistentAgentAudience,
+} from "@/features/messages/lib/persistentAgentAudience";
 import type { UseMentionsResult } from "@/features/messages/lib/useMentions";
 import type { UseRichTextEditorResult } from "@/features/messages/lib/useRichTextEditor";
 import { truncatePubkey } from "@/shared/lib/pubkey";
@@ -328,10 +331,19 @@ export function usePersistentAgentMentionHydration({
     scheduleHydration(true);
   }, [scheduleHydration]);
 
+  const getAudienceRevision = React.useCallback(
+    () =>
+      scopeRef.current
+        ? getPersistentAgentAudienceRevision(scopeRef.current)
+        : null,
+    [],
+  );
+
   return {
     audience,
     beginSubmit,
     endSubmit,
+    getAudienceRevision,
     reconcile,
     removeMentionToken,
     resolvePostSendContent,
