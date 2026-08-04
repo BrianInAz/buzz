@@ -3615,7 +3615,11 @@ test("members sidebar collapses same-persona managed agents", async ({
   await expect(
     page.getByTestId(`channel-user-search-result-${outOfChannelAgentPubkey}`),
   ).toHaveCount(0);
-  await expect(page.getByText("Pinky", { exact: true })).toHaveCount(1);
+  await expect(
+    page
+      .getByTestId("channel-management-sheet")
+      .getByText("Pinky", { exact: true }),
+  ).toHaveCount(1);
 });
 
 test("private-channel members can add people and managed agents without admin", async ({
