@@ -10,9 +10,13 @@ import { getPersistentAgentAudienceScope } from "@/features/messages/lib/persist
 import type { UseMentionsResult } from "@/features/messages/lib/useMentions";
 import type { UseRichTextEditorResult } from "@/features/messages/lib/useRichTextEditor";
 import type { ChannelType } from "@/shared/api/types";
-import { normalizePubkey } from "@/shared/lib/pubkey";
+import { normalizePubkey, truncatePubkey } from "@/shared/lib/pubkey";
 
-import type { usePersistentAgentMentionHydration } from "./usePersistentAgentMentionHydration";
+import type { ComposerAudienceChip } from "./ComposerAudienceChips";
+import {
+  resolvePersistentMentionTargets,
+  type usePersistentAgentMentionHydration,
+} from "./usePersistentAgentMentionHydration";
 
 type PersistentHydration = ReturnType<
   typeof usePersistentAgentMentionHydration
@@ -21,6 +25,7 @@ type PersistentHydration = ReturnType<
 export function useComposerAgentAudience({
   audienceThreadRootId,
   channelType,
+  composerScope,
   editTarget,
   mentions,
   ownerPubkey,
@@ -29,12 +34,14 @@ export function useComposerAgentAudience({
 }: {
   audienceThreadRootId: string | null;
   channelType: ChannelType | null;
+  composerScope: string | null | undefined;
   editTarget: unknown;
   mentions: UseMentionsResult;
   ownerPubkey: string | null | undefined;
   persistentMentionHydration: PersistentHydration;
   richText: UseRichTextEditorResult;
 }): {
+  audienceChips: readonly ComposerAudienceChip[];
   composerAudienceHint: string | null;
   audienceGeneration: number;
   audienceRevision: number;
@@ -52,19 +59,46 @@ export function useComposerAgentAudience({
         explicitAgentPubkeys: string[];
       }) => void)
     | undefined;
+  removeAudienceMember: (pubkey: string) => void;
   resolvePostSendContent: PersistentHydration["resolvePostSendContent"];
 } {
   const persistentAudience = persistentMentionHydration.audience;
+  const {
+    enabled: persistentAudienceEnabled,
+    generation: audienceGeneration,
+    pubkeys: persistentAudiencePubkeys,
+    promotePubkeys,
+    removePubkey,
+    revision: audienceRevision,
+  } = persistentAudience;
+  const { removeMentionToken, resolvePostSendContent } =
+    persistentMentionHydration;
+  const {
+    extractMentionPubkeys,
+    getMentionDisplayName,
+    hasResolvedMembers,
+    isAgentPubkey,
+    memberPubkeys,
+  } = mentions;
+  const { getPlainTextAndCursor } = richText;
+  const [manualRemovedPubkeys, setManualRemovedPubkeys] = React.useState<
+    readonly string[]
+  >([]);
   const { mode: unaddressedMode } = useUnaddressedChannelAgentMode();
   const conversationKind = channelType === "dm" ? "direct" : "channel";
 
+  React.useEffect(() => {
+    void composerScope;
+    setManualRemovedPubkeys([]);
+  }, [composerScope]);
+
   const channelMemberPubkeyList = React.useMemo(
-    () => [...mentions.memberPubkeys],
-    [mentions.memberPubkeys],
+    () => [...memberPubkeys],
+    [memberPubkeys],
   );
   const verifiedChannelAgentPubkeys = React.useMemo(
-    () => channelMemberPubkeyList.filter((pk) => mentions.isAgentPubkey(pk)),
-    [channelMemberPubkeyList, mentions.isAgentPubkey],
+    () => channelMemberPubkeyList.filter((pk) => isAgentPubkey(pk)),
+    [channelMemberPubkeyList, isAgentPubkey],
   );
   const currentAgentPubkey = React.useMemo(() => {
     if (conversationKind !== "direct") return null;
@@ -90,35 +124,37 @@ export function useComposerAgentAudience({
         conversation: conversationKind,
         messagePosition,
         unaddressedMode,
-        keepAddressedAgentsActive: persistentAudience.enabled,
+        keepAddressedAgentsActive: persistentAudienceEnabled,
         explicitMentionPubkeys,
         explicitAgentPubkeys,
         currentAgentPubkey,
         channelMemberPubkeys: channelMemberPubkeyList,
         verifiedChannelAgentPubkeys,
-        persistentThreadAudience: [...persistentAudience.pubkeys],
+        persistentThreadAudience: [...persistentAudiencePubkeys],
+        manualRemovedPubkeys,
         threadRootEventId,
         recipientLoadError:
-          !mentions.hasResolvedMembers && conversationKind === "channel",
+          !hasResolvedMembers && conversationKind === "channel",
       }),
     [
       channelMemberPubkeyList,
       conversationKind,
       currentAgentPubkey,
-      mentions.hasResolvedMembers,
-      persistentAudience.enabled,
-      persistentAudience.pubkeys,
+      hasResolvedMembers,
+      persistentAudienceEnabled,
+      persistentAudiencePubkeys,
+      manualRemovedPubkeys,
       unaddressedMode,
       verifiedChannelAgentPubkeys,
     ],
   );
 
-  const composerAudienceHint = React.useMemo(() => {
+  const currentAudience = React.useMemo(() => {
     if (editTarget != null || conversationKind === "direct") return null;
-    const text = richText.getPlainTextAndCursor().text;
-    const explicitMentionPubkeys = mentions.extractMentionPubkeys(text);
+    const text = getPlainTextAndCursor().text;
+    const explicitMentionPubkeys = extractMentionPubkeys(text);
     const explicitAgentPubkeys = explicitMentionPubkeys.filter((pk) =>
-      mentions.isAgentPubkey(pk),
+      isAgentPubkey(pk),
     );
     const decision = resolveComposerAudience({
       explicitMentionPubkeys,
@@ -126,52 +162,92 @@ export function useComposerAgentAudience({
       messagePosition: audienceThreadRootId ? "in-thread" : "top-level",
       threadRootEventId: audienceThreadRootId,
     });
-    return describeComposerAudienceHint({
-      conversation: conversationKind,
-      unaddressedMode,
-      explicitAgentCount: explicitAgentPubkeys.length,
-      implicitAgentCount:
-        explicitAgentPubkeys.length > 0
-          ? 0
-          : decision.agentAudiencePubkeys.length,
-      retainDraft: decision.retainDraft,
-    });
+    return { decision, explicitAgentPubkeys };
   }, [
     audienceThreadRootId,
     conversationKind,
     editTarget,
-    mentions,
+    extractMentionPubkeys,
+    isAgentPubkey,
     resolveComposerAudience,
-    richText,
-    unaddressedMode,
+    getPlainTextAndCursor,
   ]);
 
+  const composerAudienceHint = React.useMemo(() => {
+    if (!currentAudience?.decision.retainDraft) return null;
+    return describeComposerAudienceHint({
+      conversation: conversationKind,
+      unaddressedMode,
+      explicitAgentCount: currentAudience.explicitAgentPubkeys.length,
+      implicitAgentCount:
+        currentAudience.explicitAgentPubkeys.length > 0
+          ? 0
+          : currentAudience.decision.agentAudiencePubkeys.length,
+      retainDraft: currentAudience.decision.retainDraft,
+    });
+  }, [conversationKind, currentAudience, unaddressedMode]);
+
+  const audienceChips = React.useMemo(
+    () =>
+      resolvePersistentMentionTargets(
+        currentAudience?.decision.agentAudiencePubkeys ?? [],
+        (pubkey) => getMentionDisplayName(pubkey) ?? truncatePubkey(pubkey),
+      ),
+    [currentAudience, getMentionDisplayName],
+  );
+
+  const removeAudienceMember = React.useCallback(
+    (pubkey: string) => {
+      const normalizedPubkey = normalizePubkey(pubkey);
+      setManualRemovedPubkeys((current) =>
+        current.includes(normalizedPubkey)
+          ? current
+          : [...current, normalizedPubkey],
+      );
+      removeMentionToken(normalizedPubkey);
+      removePubkey(normalizedPubkey);
+    },
+    [removeMentionToken, removePubkey],
+  );
+
+  const promoteExplicitAgentAudience = React.useCallback(
+    ({
+      channelId: successfulChannelId,
+      ...promotion
+    }: {
+      channelId: string;
+      expectedGeneration: number;
+      expectedRevision: number | null;
+      explicitAgentPubkeys: string[];
+    }) => {
+      const readdedPubkeys = new Set(
+        promotion.explicitAgentPubkeys.map(normalizePubkey),
+      );
+      setManualRemovedPubkeys((current) =>
+        current.filter((pubkey) => !readdedPubkeys.has(pubkey)),
+      );
+      const scope = getPersistentAgentAudienceScope({
+        ownerPubkey: ownerPubkey ?? "",
+        channelId: successfulChannelId,
+        threadRootId: audienceThreadRootId,
+      });
+      promotePubkeys({ ...promotion, scope });
+    },
+    [audienceThreadRootId, ownerPubkey, promotePubkeys],
+  );
   const onSuccessfulExplicitAgentAudience =
-    persistentAudience.enabled && ownerPubkey
-      ? ({
-          channelId: successfulChannelId,
-          ...promotion
-        }: {
-          channelId: string;
-          expectedGeneration: number;
-          expectedRevision: number | null;
-          explicitAgentPubkeys: string[];
-        }) => {
-          const scope = getPersistentAgentAudienceScope({
-            ownerPubkey,
-            channelId: successfulChannelId,
-            threadRootId: audienceThreadRootId,
-          });
-          persistentAudience.promotePubkeys({ ...promotion, scope });
-        }
+    persistentAudienceEnabled && ownerPubkey
+      ? promoteExplicitAgentAudience
       : undefined;
 
   return {
+    audienceChips,
     composerAudienceHint,
-    audienceGeneration: persistentAudience.generation,
-    audienceRevision: persistentAudience.revision,
+    audienceGeneration,
+    audienceRevision,
     resolveComposerAudience,
     onSuccessfulExplicitAgentAudience,
-    resolvePostSendContent: persistentMentionHydration.resolvePostSendContent,
+    removeAudienceMember,
+    resolvePostSendContent,
   };
 }

@@ -181,3 +181,69 @@ test("manual removal drops persistent agent from audience", () => {
   });
   assert.deepEqual(result.agentAudiencePubkeys, [agentA]);
 });
+
+test("manual exclusion removes one agent while retaining the remaining persistent recipient", () => {
+  const result = resolveComposerSendAudience({
+    conversation: "channel",
+    messagePosition: "top-level",
+    unaddressedMode: "mentions-only",
+    keepAddressedAgentsActive: true,
+    explicitMentionPubkeys: [],
+    explicitAgentPubkeys: [],
+    currentAgentPubkey: null,
+    channelMemberPubkeys: [human, agentA, agentB],
+    verifiedChannelAgentPubkeys: [agentA, agentB],
+    persistentThreadAudience: [agentA, agentB],
+    manualRemovedPubkeys: [agentA],
+  });
+  assert.deepEqual(result.agentAudiencePubkeys, [agentB]);
+  assert.deepEqual(result.mentionPubkeys, [agentB]);
+});
+
+test("manual exclusions are draft-local and must not leak into a fresh resolve call", () => {
+  const removeFromDraft = resolveComposerSendAudience({
+    conversation: "channel",
+    messagePosition: "top-level",
+    unaddressedMode: "mentions-only",
+    keepAddressedAgentsActive: true,
+    explicitMentionPubkeys: [],
+    explicitAgentPubkeys: [],
+    currentAgentPubkey: null,
+    channelMemberPubkeys: [human, agentA, agentB],
+    verifiedChannelAgentPubkeys: [agentA, agentB],
+    persistentThreadAudience: [agentA, agentB],
+    manualRemovedPubkeys: [agentA],
+  });
+  const nextDraft = resolveComposerSendAudience({
+    conversation: "channel",
+    messagePosition: "top-level",
+    unaddressedMode: "mentions-only",
+    keepAddressedAgentsActive: true,
+    explicitMentionPubkeys: [],
+    explicitAgentPubkeys: [],
+    currentAgentPubkey: null,
+    channelMemberPubkeys: [human, agentA, agentB],
+    verifiedChannelAgentPubkeys: [agentA, agentB],
+    persistentThreadAudience: [agentA, agentB],
+  });
+  assert.deepEqual(removeFromDraft.agentAudiencePubkeys, [agentB]);
+  assert.deepEqual(nextDraft.agentAudiencePubkeys, [agentA, agentB]);
+});
+
+test("an explicit mention re-adds a manually excluded agent alongside remaining recipients", () => {
+  const result = resolveComposerSendAudience({
+    conversation: "channel",
+    messagePosition: "top-level",
+    unaddressedMode: "all-channel-agents",
+    keepAddressedAgentsActive: true,
+    explicitMentionPubkeys: [agentA],
+    explicitAgentPubkeys: [agentA],
+    currentAgentPubkey: null,
+    channelMemberPubkeys: [human, agentA, agentB],
+    verifiedChannelAgentPubkeys: [agentA, agentB],
+    persistentThreadAudience: [agentA, agentB],
+    manualRemovedPubkeys: [agentA],
+  });
+  assert.deepEqual(result.agentAudiencePubkeys, [agentB, agentA]);
+  assert.deepEqual(result.mentionPubkeys, [agentB, agentA]);
+});
