@@ -384,10 +384,9 @@ test("manual audience exclusions can be re-added with @agent selection", async (
   await expect.poll(() => readAudience(page)).toEqual([AGENT_B]);
   await input.pressSequentially("hello");
   await composer.getByTestId("send-message").click();
-  await expect.poll(() => readOutgoingMentionPubkeys(page, "hello")).toEqual([
-    AGENT_B,
-    AGENT_A,
-  ]);
+  await expect
+    .poll(() => readOutgoingMentionPubkeys(page, "hello"))
+    .toEqual([AGENT_B, AGENT_A]);
   await expect.poll(() => readAudience(page)).toEqual([AGENT_A, AGENT_B]);
 });
 

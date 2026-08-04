@@ -3616,9 +3616,7 @@ test("members sidebar collapses same-persona managed agents", async ({
     page.getByTestId(`channel-user-search-result-${outOfChannelAgentPubkey}`),
   ).toHaveCount(0);
   await expect(
-    page
-      .getByTestId("members-sidebar")
-      .getByText("Pinky", { exact: true }),
+    page.getByTestId("members-sidebar").getByText("Pinky", { exact: true }),
   ).toHaveCount(1);
 });
 
