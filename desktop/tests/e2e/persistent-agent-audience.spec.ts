@@ -115,36 +115,20 @@ async function readOutgoingMentionPubkeys(page: Page, content: string) {
     const entries =
       (
         window as Window & {
-          __BUZZ_E2E_COMMAND_LOG__?: Array<{
+          __BUZZ_E2E_COMMAND_PAYLOADS__?: Array<{
             command: string;
             payload: unknown;
           }>;
         }
-      ).__BUZZ_E2E_COMMAND_LOG__ ?? [];
+      ).__BUZZ_E2E_COMMAND_PAYLOADS__ ?? [];
 
     for (const entry of entries.toReversed()) {
-      if (entry.command !== "plugin:websocket|send") continue;
-      const data = (
-        entry.payload as { message?: { data?: string } } | undefined
-      )?.message?.data;
-      if (!data) continue;
-
-      try {
-        const frame = JSON.parse(data) as [
-          string,
-          { content?: string; tags?: string[][] },
-        ];
-        if (frame[0] !== "EVENT" || !frame[1].content?.includes(expectedContent)) {
-          continue;
-        }
-        return (
-          frame[1].tags
-            ?.filter((tag) => tag[0] === "p")
-            .map((tag) => tag[1]) ?? []
-        );
-      } catch {
-        // Ignore non-event mock websocket frames.
-      }
+      if (entry.command !== "send_channel_message") continue;
+      const payload = entry.payload as
+        | { content?: string; mentionPubkeys?: string[] }
+        | undefined;
+      if (!payload?.content?.includes(expectedContent)) continue;
+      return payload.mentionPubkeys ?? [];
     }
 
     return null;
