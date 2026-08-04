@@ -148,6 +148,23 @@ test("direct conversation addresses current agent only", () => {
   assert.equal(result.replyPlacement.kind, "top-level");
 });
 
+test("direct path keeps explicit agent mentions for DM expansion", () => {
+  const result = resolveComposerSendAudience({
+    conversation: "direct",
+    messagePosition: "top-level",
+    unaddressedMode: "all-channel-agents",
+    keepAddressedAgentsActive: false,
+    explicitMentionPubkeys: [agentB],
+    explicitAgentPubkeys: [agentB],
+    currentAgentPubkey: agentA,
+    channelMemberPubkeys: [human, agentA],
+    verifiedChannelAgentPubkeys: [agentA, agentB],
+    persistentThreadAudience: [],
+  });
+  // Both the DM peer agent and the newly @mentioned agent must remain.
+  assert.deepEqual([...result.mentionPubkeys].sort(), [agentA, agentB].sort());
+});
+
 test("manual removal drops persistent agent from audience", () => {
   const result = resolveComposerSendAudience({
     conversation: "channel",

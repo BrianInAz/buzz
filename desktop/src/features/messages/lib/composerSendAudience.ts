@@ -76,7 +76,12 @@ export function resolveComposerSendAudience(
   };
 
   const decision = resolveContextualAgentConversation(policyInput);
-  const agentAudience = uniqueNormalized(decision.audiencePubkeys);
+  // Always retain authored agent @mentions (e.g. DM expansion to a new agent)
+  // while still applying implicit/persistent audience from policy.
+  const agentAudience = uniqueNormalized([
+    ...decision.audiencePubkeys,
+    ...explicitAgentSet,
+  ]);
   const humanMentions = uniqueNormalized(input.explicitMentionPubkeys).filter(
     (pk) => !explicitAgentSet.has(pk),
   );
@@ -85,7 +90,7 @@ export function resolveComposerSendAudience(
   return {
     mentionPubkeys,
     agentAudiencePubkeys: agentAudience,
-    sharedThread: decision.sharedThread,
+    sharedThread: decision.sharedThread || agentAudience.length >= 2,
     retainDraft: decision.retainDraft,
     replyPlacement: decision.replyPlacement,
   };
