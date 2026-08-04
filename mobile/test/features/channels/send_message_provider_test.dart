@@ -24,8 +24,7 @@ void main() {
         addLocalMessage: (_, event) => localMessages.add(event),
         completeLocalMessage: (_, eventId) => completedIds.add(eventId),
         removeLocalMessage: (_, eventId) => removedIds.add(eventId),
-        readUnaddressedMode: () =>
-            UnaddressedChannelAgentMode.mentionsOnly,
+        readUnaddressedMode: () => UnaddressedChannelAgentMode.mentionsOnly,
         fetchAgentDirectory: () async => const [],
         readChannel: (_) => null,
       );
