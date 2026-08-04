@@ -6,10 +6,23 @@ class _AgentsSection extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final mode = ref.watch(unaddressedChannelAgentModeProvider);
+    final keepAddressedAgentsActive = ref
+        .watch(persistentAgentAudienceProvider)
+        .enabled;
+    final audienceNotifier = ref.read(persistentAgentAudienceProvider.notifier);
 
     return AppListCard(
       label: 'Agents',
       children: [
+        AppListRow(
+          icon: LucideIcons.users,
+          title: 'Keep addressed agents active',
+          value: keepAddressedAgentsActive ? 'On' : 'Off',
+          trailing: Switch(
+            value: keepAddressedAgentsActive,
+            onChanged: audienceNotifier.setEnabled,
+          ),
+        ),
         AppListRow(
           icon: LucideIcons.bot,
           title: 'Unaddressed channel messages',
