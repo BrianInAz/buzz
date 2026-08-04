@@ -1,12 +1,9 @@
-/// Contextual agent audience + reply-placement policy (Flutter).
-///
-/// Contract: tests/fixtures/contextual-agent-conversation-cases.json
-/// Pure resolver — composer/settings wiring comes in later Flutter leaves.
+// Contextual agent audience + reply-placement policy (Flutter).
+//
+// Contract: tests/fixtures/contextual-agent-conversation-cases.json
+// Pure resolver plus send-path helpers for unaddressed-channel mode.
 
-enum UnaddressedChannelAgentMode {
-  allChannelAgents,
-  mentionsOnly,
-}
+enum UnaddressedChannelAgentMode { allChannelAgents, mentionsOnly }
 
 sealed class ReplyPlacement {
   const ReplyPlacement();
@@ -101,10 +98,7 @@ Set<String> _eligibleChannelAgents(ContextualAgentConversationInput input) {
       .toSet();
 }
 
-List<String> _filterToEligible(
-  List<String> candidates,
-  Set<String> eligible,
-) {
+List<String> _filterToEligible(List<String> candidates, Set<String> eligible) {
   return _uniqueSorted(
     candidates.map(_normalizePubkey).where(eligible.contains),
   );
@@ -152,8 +146,9 @@ ContextualAgentConversationDecision resolveContextualAgentConversation(
 
   if (input.conversation == 'direct') {
     final current = input.currentAgentPubkey;
-    final audience =
-        current == null || current.isEmpty ? <String>[] : [_normalizePubkey(current)];
+    final audience = current == null || current.isEmpty
+        ? <String>[]
+        : [_normalizePubkey(current)];
     return ContextualAgentConversationDecision(
       audiencePubkeys: audience,
       replyPlacement: _placementFor(input, audience.length),
@@ -165,24 +160,28 @@ ContextualAgentConversationDecision resolveContextualAgentConversation(
   final eligible = _eligibleChannelAgents(input);
   final removed = input.manualRemovedPubkeys.map(_normalizePubkey).toSet();
 
-  final explicit = _filterToEligible(input.explicitMentionPubkeys, eligible)
-      .where((pk) => !removed.contains(pk))
-      .toList();
+  final explicit = _filterToEligible(
+    input.explicitMentionPubkeys,
+    eligible,
+  ).where((pk) => !removed.contains(pk)).toList();
 
   late final List<String> audience;
   if (explicit.isNotEmpty) {
     audience = explicit;
   } else {
     final persistent = input.keepAddressedAgentsActive
-        ? _filterToEligible(input.persistentThreadAudience, eligible)
-            .where((pk) => !removed.contains(pk))
-            .toList()
+        ? _filterToEligible(
+            input.persistentThreadAudience,
+            eligible,
+          ).where((pk) => !removed.contains(pk)).toList()
         : <String>[];
     if (persistent.isNotEmpty) {
       audience = persistent;
     } else if (input.unaddressedMode ==
         UnaddressedChannelAgentMode.allChannelAgents) {
-      audience = _uniqueSorted(eligible).where((pk) => !removed.contains(pk)).toList();
+      audience = _uniqueSorted(
+        eligible,
+      ).where((pk) => !removed.contains(pk)).toList();
     } else {
       audience = [];
     }

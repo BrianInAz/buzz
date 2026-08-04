@@ -4039,10 +4039,7 @@ mod tests {
     fn test_reply_instruction_absent_for_single_agent_top_level_channel() {
         let ch = Uuid::new_v4();
         // One agent p-tag, human sender → flat top-level response.
-        let event = make_event_with_tags(
-            "hello world",
-            vec![vec!["p".into(), AGENT_A_PK.into()]],
-        );
+        let event = make_event_with_tags("hello world", vec![vec!["p".into(), AGENT_A_PK.into()]]);
         let batch = FlushBatch {
             channel_id: ch,
             events: vec![BatchEvent {
