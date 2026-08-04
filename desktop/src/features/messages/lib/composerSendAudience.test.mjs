@@ -94,3 +94,73 @@ test("describeComposerAudienceHint covers modes", () => {
     null,
   );
 });
+
+test("keep-addressed persistent audience applies under mentions-only", () => {
+  const result = resolveComposerSendAudience({
+    conversation: "channel",
+    messagePosition: "top-level",
+    unaddressedMode: "mentions-only",
+    keepAddressedAgentsActive: true,
+    explicitMentionPubkeys: [],
+    explicitAgentPubkeys: [],
+    currentAgentPubkey: null,
+    channelMemberPubkeys: [human, agentA, agentB],
+    verifiedChannelAgentPubkeys: [agentA, agentB],
+    persistentThreadAudience: [agentA],
+  });
+  assert.deepEqual(result.agentAudiencePubkeys, [agentA]);
+  assert.equal(result.sharedThread, false);
+});
+
+test("recipient load error retains draft and clears audience", () => {
+  const result = resolveComposerSendAudience({
+    conversation: "channel",
+    messagePosition: "top-level",
+    unaddressedMode: "all-channel-agents",
+    keepAddressedAgentsActive: false,
+    explicitMentionPubkeys: [],
+    explicitAgentPubkeys: [],
+    currentAgentPubkey: null,
+    channelMemberPubkeys: [human, agentA],
+    verifiedChannelAgentPubkeys: [agentA],
+    persistentThreadAudience: [],
+    recipientLoadError: true,
+  });
+  assert.deepEqual(result.mentionPubkeys, []);
+  assert.equal(result.retainDraft, true);
+});
+
+test("direct conversation addresses current agent only", () => {
+  const result = resolveComposerSendAudience({
+    conversation: "direct",
+    messagePosition: "top-level",
+    unaddressedMode: "all-channel-agents",
+    keepAddressedAgentsActive: false,
+    explicitMentionPubkeys: [],
+    explicitAgentPubkeys: [],
+    currentAgentPubkey: agentA,
+    channelMemberPubkeys: [human, agentA],
+    verifiedChannelAgentPubkeys: [agentA],
+    persistentThreadAudience: [],
+  });
+  assert.deepEqual(result.mentionPubkeys, [agentA]);
+  assert.equal(result.sharedThread, false);
+  assert.equal(result.replyPlacement.kind, "top-level");
+});
+
+test("manual removal drops persistent agent from audience", () => {
+  const result = resolveComposerSendAudience({
+    conversation: "channel",
+    messagePosition: "top-level",
+    unaddressedMode: "mentions-only",
+    keepAddressedAgentsActive: true,
+    explicitMentionPubkeys: [],
+    explicitAgentPubkeys: [],
+    currentAgentPubkey: null,
+    channelMemberPubkeys: [human, agentA, agentB],
+    verifiedChannelAgentPubkeys: [agentA, agentB],
+    persistentThreadAudience: [agentA, agentB],
+    manualRemovedPubkeys: [agentB],
+  });
+  assert.deepEqual(result.agentAudiencePubkeys, [agentA]);
+});

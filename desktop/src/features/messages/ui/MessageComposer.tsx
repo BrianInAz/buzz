@@ -363,19 +363,12 @@ function MessageComposerImpl({
     const explicitAgentPubkeys = explicitMentionPubkeys.filter((pk) =>
       mentions.isAgentPubkey(pk),
     );
-    const decision = resolveComposerSendAudience({
-      conversation: conversationKind,
-      messagePosition: audienceThreadRootId ? "in-thread" : "top-level",
-      unaddressedMode,
-      keepAddressedAgentsActive: persistentAudience.enabled,
+    // Reuse the same send-path resolver so the hint cannot drift from p-tags.
+    const decision = resolveComposerAudience({
       explicitMentionPubkeys,
       explicitAgentPubkeys,
-      currentAgentPubkey,
-      channelMemberPubkeys: channelMemberPubkeyList,
-      verifiedChannelAgentPubkeys,
-      persistentThreadAudience: [...persistentAudience.pubkeys],
+      messagePosition: audienceThreadRootId ? "in-thread" : "top-level",
       threadRootEventId: audienceThreadRootId,
-      recipientLoadError: !mentions.hasResolvedMembers,
     });
     return describeComposerAudienceHint({
       conversation: conversationKind,
@@ -389,16 +382,12 @@ function MessageComposerImpl({
     });
   }, [
     audienceThreadRootId,
-    channelMemberPubkeyList,
     conversationKind,
-    currentAgentPubkey,
     editTarget,
     mentions,
-    persistentAudience.enabled,
-    persistentAudience.pubkeys,
+    resolveComposerAudience,
     richText,
     unaddressedMode,
-    verifiedChannelAgentPubkeys,
   ]);
 
   const mentionSendFlow = useMentionSendFlow({

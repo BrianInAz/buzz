@@ -62,6 +62,15 @@ export function writeUnaddressedChannelAgentMode(
     | null
     | undefined = globalThis.localStorage,
 ): void {
+  if (mode === next) {
+    // Still persist in case storage was cleared while in-memory mode matched.
+    try {
+      storage?.setItem(UNADDRESSED_CHANNEL_AGENT_MODE_STORAGE_KEY, next);
+    } catch {
+      // Best-effort.
+    }
+    return;
+  }
   mode = next;
   try {
     storage?.setItem(UNADDRESSED_CHANNEL_AGENT_MODE_STORAGE_KEY, next);

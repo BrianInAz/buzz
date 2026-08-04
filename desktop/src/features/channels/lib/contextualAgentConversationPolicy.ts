@@ -7,6 +7,8 @@
  * `unaddressedChannelAgentMode.ts`.
  */
 
+import { normalizePubkey } from "@/shared/lib/pubkey.ts";
+
 export type UnaddressedChannelAgentMode =
   | "all-channel-agents"
   | "mentions-only";
@@ -45,10 +47,6 @@ export type ContextualAgentConversationDecision = {
   nestUnderAgentReply?: boolean;
 };
 
-function normalizePubkey(pubkey: string): string {
-  return pubkey.trim().toLowerCase();
-}
-
 function uniqueSorted(pubkeys: Iterable<string>): string[] {
   const set = new Set<string>();
   for (const pk of pubkeys) {
@@ -66,7 +64,9 @@ function asSet(pubkeys: readonly string[]): Set<string> {
  * Verified current-channel agents only: intersection of membership and
  * verified agent evidence. Never community/relay-wide fanout.
  */
-function eligibleChannelAgents(input: ContextualAgentConversationInput): Set<string> {
+function eligibleChannelAgents(
+  input: ContextualAgentConversationInput,
+): Set<string> {
   const members = asSet(input.channelMemberPubkeys);
   const verified = asSet(input.verifiedChannelAgentPubkeys);
   const eligible = new Set<string>();
@@ -80,7 +80,9 @@ function filterToEligible(
   candidates: readonly string[],
   eligible: Set<string>,
 ): string[] {
-  return uniqueSorted(candidates.filter((pk) => eligible.has(normalizePubkey(pk))));
+  return uniqueSorted(
+    candidates.filter((pk) => eligible.has(normalizePubkey(pk))),
+  );
 }
 
 /**
@@ -135,21 +137,21 @@ export function resolveContextualAgentConversation(
   // Channel path
   const eligible = eligibleChannelAgents(input);
   const removed = asSet(input.manualRemovedPubkeys);
-  const explicit = filterToEligible(input.explicitMentionPubkeys, eligible).filter(
-    (pk) => !removed.has(pk),
-  );
+  const explicit = filterToEligible(
+    input.explicitMentionPubkeys,
+    eligible,
+  ).filter((pk) => !removed.has(pk));
 
   let audience: string[];
 
   if (explicit.length > 0) {
     audience = explicit;
   } else {
-    const persistent =
-      input.keepAddressedAgentsActive
-        ? filterToEligible(input.persistentThreadAudience, eligible).filter(
-            (pk) => !removed.has(pk),
-          )
-        : [];
+    const persistent = input.keepAddressedAgentsActive
+      ? filterToEligible(input.persistentThreadAudience, eligible).filter(
+          (pk) => !removed.has(pk),
+        )
+      : [];
 
     if (persistent.length > 0) {
       audience = persistent;
