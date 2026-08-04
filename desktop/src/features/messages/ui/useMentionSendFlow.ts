@@ -47,6 +47,7 @@ type PendingNonMemberMentionSend = {
   savedImeta: ImetaMedia[];
   savedSpoileredAttachmentUrls: Set<string>;
   sentDraftKey: string | null | undefined;
+  expectedAudiencePubkeys: string[];
   audienceGeneration: number;
   audienceRevision: number | null;
   /** Agent mentions explicitly authored in this draft (never inferred). */
@@ -65,6 +66,7 @@ type SendMessageWithMentionFlowInput = {
   spoileredAttachmentUrls?: ReadonlySet<string>;
   trimmed: string;
   audienceGeneration?: number;
+  expectedAudiencePubkeys?: string[];
   audienceRevision?: number | null;
 };
 
@@ -104,6 +106,7 @@ type UseMentionSendFlowOptions = {
   >;
   onSuccessfulExplicitAgentAudience?: (audience: {
     channelId: string;
+    expectedAudiencePubkeys: string[];
     expectedGeneration: number;
     expectedRevision: number | null;
     explicitAgentPubkeys: string[];
@@ -540,6 +543,7 @@ export function useMentionSendFlow({
             // excluded recipients here as well as from event routing.
             onSuccessfulExplicitAgentAudience?.({
               channelId: sendChannelId ?? draft.capturedChannelId ?? "",
+              expectedAudiencePubkeys: draft.expectedAudiencePubkeys,
               expectedGeneration: draft.audienceGeneration,
               expectedRevision: draft.audienceRevision,
               explicitAgentPubkeys: effectiveExplicitAgentPubkeys,
@@ -658,6 +662,7 @@ export function useMentionSendFlow({
       spoileredAttachmentUrls = new Set(),
       trimmed,
       audienceGeneration = 0,
+      expectedAudiencePubkeys = [],
       audienceRevision = null,
     }: SendMessageWithMentionFlowInput) => {
       if (isMentionSendPendingRef.current) {
@@ -787,6 +792,7 @@ export function useMentionSendFlow({
           savedSpoileredAttachmentUrls: new Set(spoileredAttachmentUrls),
           sentDraftKey,
           audienceGeneration,
+          expectedAudiencePubkeys,
           audienceRevision,
           explicitAgentPubkeys,
         };

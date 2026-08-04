@@ -147,10 +147,34 @@ test("removal while send awaits wins over late success", async () => {
     expectedGeneration: store.getPersistentAgentAudienceGeneration(),
     scope,
     expectedRevision: revisionAtSubmit,
+    expectedAudiencePubkeys: [agentA],
     explicitAgentPubkeys: [agentA],
   });
 
   assert.deepEqual(savedAudiences(), { [scope]: [] });
+});
+
+test("matching audience state permits promotion after a revision change", async () => {
+  const store = await loadStore(102);
+  const scope = `${ownerA}:channel-a:thread:root`;
+  store.setPersistentAgentAudienceEnabled(true);
+  store.setPersistentAgentAudience(scope, [agentA]);
+  const revisionAtSubmit = store.getPersistentAgentAudienceRevision(scope);
+
+  // A scope can advance and return to its submit-time state while the send is
+  // pending. The semantic audience is unchanged, so successful promotion is
+  // still safe.
+  store.setPersistentAgentAudience(scope, [agentB]);
+  store.setPersistentAgentAudience(scope, [agentA]);
+  store.promotePersistentAgentAudience({
+    expectedGeneration: store.getPersistentAgentAudienceGeneration(),
+    scope,
+    expectedRevision: revisionAtSubmit,
+    expectedAudiencePubkeys: [agentA],
+    explicitAgentPubkeys: [agentC],
+  });
+
+  assert.deepEqual(savedAudiences(), { [scope]: [agentC, agentA] });
 });
 
 test("removing final chip preserves an explicit empty scope", async () => {
