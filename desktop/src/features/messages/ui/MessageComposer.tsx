@@ -24,8 +24,14 @@ import { useAttachmentEditing } from "@/features/messages/lib/useAttachmentEditi
 import { useMediaUpload } from "@/features/messages/lib/useMediaUpload";
 import { useMentions } from "@/features/messages/lib/useMentions";
 import { diffAddedMentionPubkeys } from "@/features/messages/lib/threading";
+import { useUnaddressedChannelAgentMode } from "@/features/channels/lib/unaddressedChannelAgentMode";
+import {
+  describeComposerAudienceHint,
+  resolveComposerSendAudience,
+} from "@/features/messages/lib/composerSendAudience";
 import { getPersistentAgentAudienceScope } from "@/features/messages/lib/persistentAgentAudience";
 import { useIdentityQuery } from "@/shared/api/hooks";
+import { normalizePubkey } from "@/shared/lib/pubkey";
 import {
   hasMentionClipboardHtml,
   normalizeMentionClipboardHtml,
@@ -292,6 +298,108 @@ function MessageComposerImpl({
     persistentMentionHydration,
   );
   persistentMentionHydrationRef.current = persistentMentionHydration;
+  const { mode: unaddressedMode } = useUnaddressedChannelAgentMode();
+
+  const conversationKind = channelType === "dm" ? "direct" : "channel";
+  const channelMemberPubkeyList = React.useMemo(
+    () => [...mentions.memberPubkeys],
+    [mentions.memberPubkeys],
+  );
+  const verifiedChannelAgentPubkeys = React.useMemo(
+    () => channelMemberPubkeyList.filter((pk) => mentions.isAgentPubkey(pk)),
+    [channelMemberPubkeyList, mentions.isAgentPubkey],
+  );
+  const currentAgentPubkey = React.useMemo(() => {
+    if (conversationKind !== "direct") return null;
+    const agents = verifiedChannelAgentPubkeys.filter(
+      (pk) => pk !== normalizePubkey(ownerPubkey ?? ""),
+    );
+    return agents[0] ?? null;
+  }, [conversationKind, ownerPubkey, verifiedChannelAgentPubkeys]);
+
+  const resolveComposerAudience = React.useCallback(
+    ({
+      explicitMentionPubkeys,
+      explicitAgentPubkeys,
+      messagePosition,
+      threadRootEventId,
+    }: {
+      explicitMentionPubkeys: string[];
+      explicitAgentPubkeys: string[];
+      messagePosition: "top-level" | "in-thread";
+      threadRootEventId: string | null;
+    }) =>
+      resolveComposerSendAudience({
+        conversation: conversationKind,
+        messagePosition,
+        unaddressedMode,
+        keepAddressedAgentsActive: persistentAudience.enabled,
+        explicitMentionPubkeys,
+        explicitAgentPubkeys,
+        currentAgentPubkey,
+        channelMemberPubkeys: channelMemberPubkeyList,
+        verifiedChannelAgentPubkeys,
+        persistentThreadAudience: [...persistentAudience.pubkeys],
+        threadRootEventId,
+        recipientLoadError:
+          !mentions.hasResolvedMembers && conversationKind === "channel",
+      }),
+    [
+      channelMemberPubkeyList,
+      conversationKind,
+      currentAgentPubkey,
+      mentions.hasResolvedMembers,
+      persistentAudience.enabled,
+      persistentAudience.pubkeys,
+      unaddressedMode,
+      verifiedChannelAgentPubkeys,
+    ],
+  );
+
+  const composerAudienceHint = React.useMemo(() => {
+    if (editTarget != null || conversationKind === "direct") return null;
+    const text = richText.getPlainTextAndCursor().text;
+    const explicitMentionPubkeys = mentions.extractMentionPubkeys(text);
+    const explicitAgentPubkeys = explicitMentionPubkeys.filter((pk) =>
+      mentions.isAgentPubkey(pk),
+    );
+    const decision = resolveComposerSendAudience({
+      conversation: conversationKind,
+      messagePosition: audienceThreadRootId ? "in-thread" : "top-level",
+      unaddressedMode,
+      keepAddressedAgentsActive: persistentAudience.enabled,
+      explicitMentionPubkeys,
+      explicitAgentPubkeys,
+      currentAgentPubkey,
+      channelMemberPubkeys: channelMemberPubkeyList,
+      verifiedChannelAgentPubkeys,
+      persistentThreadAudience: [...persistentAudience.pubkeys],
+      threadRootEventId: audienceThreadRootId,
+      recipientLoadError: !mentions.hasResolvedMembers,
+    });
+    return describeComposerAudienceHint({
+      conversation: conversationKind,
+      unaddressedMode,
+      explicitAgentCount: explicitAgentPubkeys.length,
+      implicitAgentCount:
+        explicitAgentPubkeys.length > 0
+          ? 0
+          : decision.agentAudiencePubkeys.length,
+      retainDraft: decision.retainDraft,
+    });
+  }, [
+    audienceThreadRootId,
+    channelMemberPubkeyList,
+    conversationKind,
+    currentAgentPubkey,
+    editTarget,
+    mentions,
+    persistentAudience.enabled,
+    persistentAudience.pubkeys,
+    richText,
+    unaddressedMode,
+    verifiedChannelAgentPubkeys,
+  ]);
 
   const mentionSendFlow = useMentionSendFlow({
     channelId,
@@ -321,6 +429,7 @@ function MessageComposerImpl({
           }
         : undefined,
     resolvePostSendContent: persistentMentionHydration.resolvePostSendContent,
+    resolveComposerAudience,
   });
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: editTarget?.id is the trigger
@@ -954,6 +1063,15 @@ function MessageComposerImpl({
                   Dismiss
                 </button>
               </div>
+            ) : null}
+
+            {composerAudienceHint ? (
+              <p
+                className="mb-2 text-2xs text-muted-foreground"
+                data-testid="composer-agent-audience-hint"
+              >
+                {composerAudienceHint}
+              </p>
             ) : null}
 
             {(media.pendingImeta.length > 0 || media.isUploading) && (
