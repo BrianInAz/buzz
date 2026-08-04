@@ -3617,7 +3617,7 @@ test("members sidebar collapses same-persona managed agents", async ({
   ).toHaveCount(0);
   await expect(
     page
-      .getByTestId("channel-management-sheet")
+      .getByTestId("members-sidebar")
       .getByText("Pinky", { exact: true }),
   ).toHaveCount(1);
 });
