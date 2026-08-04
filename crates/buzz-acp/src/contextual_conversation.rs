@@ -117,6 +117,73 @@ fn placement_for(input: &ContextualAgentConversationInput, audience_count: usize
     ReplyPlacement::TopLevel
 }
 
+/// ACP turn context for reply placement (mirrors client policy without I/O).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpTurnPlacementInput {
+    /// True when the turn is 1:1 DM-scoped.
+    pub is_dm: bool,
+    /// Human-facing turns flatten; agent-only stays unconstrained.
+    pub is_human_facing: bool,
+    pub message_position: &'static str,
+    pub thread_root_event_id: Option<String>,
+    pub triggering_event_id: String,
+    /// How many agents are addressed on the triggering human message (`p` tags).
+    /// Count of 0 is treated as 1 when the turn is human-facing (this agent alone).
+    pub addressed_agent_count: usize,
+}
+
+/// Map placement to an optional `--reply-to` event id for the agent prompt.
+pub fn reply_placement_anchor(placement: &ReplyPlacement) -> Option<&str> {
+    match placement {
+        ReplyPlacement::ThreadRoot { event_id } => Some(event_id.as_str()),
+        ReplyPlacement::TopLevel | ReplyPlacement::Unconstrained => None,
+    }
+}
+
+/// Resolve reply placement for an ACP turn.
+///
+/// - Agent-only (not human-facing): unconstrained (no forced anchor).
+/// - Direct (DM) top-level: top-level flat.
+/// - Direct (DM) in-thread: thread root (or triggering id if root missing).
+/// - Channel top-level with ≥2 addressed agents: shared thread at human event.
+/// - Channel top-level with one addressed agent: top-level flat.
+/// - Channel in-thread: always thread root (never nest under an agent reply).
+pub fn resolve_acp_turn_placement(input: &AcpTurnPlacementInput) -> ReplyPlacement {
+    if !input.is_human_facing {
+        return ReplyPlacement::Unconstrained;
+    }
+
+    let agent_count = input.addressed_agent_count.max(1);
+
+    if input.is_dm {
+        if input.message_position == "in-thread" {
+            let event_id = input
+                .thread_root_event_id
+                .clone()
+                .unwrap_or_else(|| input.triggering_event_id.clone());
+            return ReplyPlacement::ThreadRoot { event_id };
+        }
+        return ReplyPlacement::TopLevel;
+    }
+
+    // Channel
+    if input.message_position == "in-thread" {
+        if let Some(root) = &input.thread_root_event_id {
+            return ReplyPlacement::ThreadRoot {
+                event_id: root.clone(),
+            };
+        }
+    }
+
+    if agent_count >= 2 {
+        return ReplyPlacement::ThreadRoot {
+            event_id: input.triggering_event_id.clone(),
+        };
+    }
+
+    ReplyPlacement::TopLevel
+}
+
 /// Resolve audience and reply placement for a human/agent send path.
 pub fn resolve_contextual_agent_conversation(
     input: &ContextualAgentConversationInput,
@@ -272,6 +339,71 @@ mod tests {
             recipient_load_error: value["recipientLoadError"].as_bool().unwrap_or(false),
             human_message_event_id: opt_str("humanMessageEventId"),
         }
+    }
+
+    #[test]
+    fn acp_turn_placement_single_agent_top_level_is_flat() {
+        let placement = resolve_acp_turn_placement(&AcpTurnPlacementInput {
+            is_dm: false,
+            is_human_facing: true,
+            message_position: "top-level",
+            thread_root_event_id: None,
+            triggering_event_id: "trig".into(),
+            addressed_agent_count: 1,
+        });
+        assert_eq!(placement, ReplyPlacement::TopLevel);
+        assert_eq!(reply_placement_anchor(&placement), None);
+    }
+
+    #[test]
+    fn acp_turn_placement_multi_agent_top_level_threads() {
+        let placement = resolve_acp_turn_placement(&AcpTurnPlacementInput {
+            is_dm: false,
+            is_human_facing: true,
+            message_position: "top-level",
+            thread_root_event_id: None,
+            triggering_event_id: "trig".into(),
+            addressed_agent_count: 2,
+        });
+        assert_eq!(
+            placement,
+            ReplyPlacement::ThreadRoot {
+                event_id: "trig".into()
+            }
+        );
+        assert_eq!(reply_placement_anchor(&placement), Some("trig"));
+    }
+
+    #[test]
+    fn acp_turn_placement_in_thread_uses_root() {
+        let placement = resolve_acp_turn_placement(&AcpTurnPlacementInput {
+            is_dm: false,
+            is_human_facing: true,
+            message_position: "in-thread",
+            thread_root_event_id: Some("root".into()),
+            triggering_event_id: "trig".into(),
+            addressed_agent_count: 3,
+        });
+        assert_eq!(
+            placement,
+            ReplyPlacement::ThreadRoot {
+                event_id: "root".into()
+            }
+        );
+    }
+
+    #[test]
+    fn acp_turn_placement_agent_only_unconstrained() {
+        let placement = resolve_acp_turn_placement(&AcpTurnPlacementInput {
+            is_dm: false,
+            is_human_facing: false,
+            message_position: "in-thread",
+            thread_root_event_id: Some("root".into()),
+            triggering_event_id: "trig".into(),
+            addressed_agent_count: 2,
+        });
+        assert_eq!(placement, ReplyPlacement::Unconstrained);
+        assert_eq!(reply_placement_anchor(&placement), None);
     }
 
     #[test]

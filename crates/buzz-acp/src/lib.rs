@@ -14,8 +14,9 @@ mod setup_mode;
 mod usage;
 
 pub use contextual_conversation::{
-    resolve_contextual_agent_conversation, ContextualAgentConversationDecision,
-    ContextualAgentConversationInput, ReplyPlacement, UnaddressedChannelAgentMode,
+    reply_placement_anchor, resolve_acp_turn_placement, resolve_contextual_agent_conversation,
+    AcpTurnPlacementInput, ContextualAgentConversationDecision, ContextualAgentConversationInput,
+    ReplyPlacement, UnaddressedChannelAgentMode,
 };
 pub use usage::TurnUsage;
 
