@@ -8,6 +8,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import '../../shared/auth/auth.dart';
 import '../../shared/clipboard_utils.dart';
 import '../../shared/contextual_agent/contextual_agent_conversation_policy.dart';
+import '../../shared/contextual_agent/persistent_agent_audience.dart';
 import '../../shared/contextual_agent/unaddressed_channel_agent_mode.dart';
 import '../../shared/relay/relay.dart';
 import '../../shared/theme/theme.dart';
