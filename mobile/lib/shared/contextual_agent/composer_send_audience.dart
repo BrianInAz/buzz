@@ -56,7 +56,12 @@ ComposerSendAudienceResult resolveComposerSendAudience({
     ),
   );
 
-  final agentAudience = _uniqueNormalized(decision.audiencePubkeys);
+  // Always retain authored agent @mentions (DM expansion to a new agent)
+  // while still applying implicit/persistent audience from policy.
+  final agentAudience = _uniqueNormalized([
+    ...decision.audiencePubkeys,
+    ...explicitAgentSet,
+  ]);
   final humanMentions = _uniqueNormalized(
     explicitMentionPubkeys,
   ).where((pk) => !explicitAgentSet.contains(pk)).toList();
