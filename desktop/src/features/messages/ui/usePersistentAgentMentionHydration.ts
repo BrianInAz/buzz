@@ -315,8 +315,13 @@ export function usePersistentAgentMentionHydration({
   );
 
   const beginSubmit = React.useCallback(() => {
+    // Do not let a pending draft reconciliation inspect pre-submit text after
+    // the successful send restores the persistent audience. In particular,
+    // a freshly selected mention can still be adjacent to a retained token
+    // until the editor's next transaction settles.
+    cancelReconcile();
     isSubmittingRef.current = true;
-  }, []);
+  }, [cancelReconcile]);
 
   const endSubmit = React.useCallback(() => {
     isSubmittingRef.current = false;
