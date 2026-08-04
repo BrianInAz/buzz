@@ -106,6 +106,8 @@ export function usePersistentAgentMentionHydration({
   }, [audienceScope, initialize, initialAgentPubkeys]);
   const isRestoringRef = React.useRef(false);
   const isSubmittingRef = React.useRef(false);
+  const isMentionOpenRef = React.useRef(mentions.isMentionOpen);
+  isMentionOpenRef.current = mentions.isMentionOpen;
   const cancelHydrationAutocompleteRef = React.useRef(false);
   const hydratedRef = React.useRef(false);
   const hydratedMentionLabelsRef = React.useRef(new Map<string, string>());
@@ -210,7 +212,11 @@ export function usePersistentAgentMentionHydration({
           !hydratedRef.current ||
           isRestoringRef.current ||
           isSubmittingRef.current ||
-          isEditingRef.current
+          isEditingRef.current ||
+          // A pending autocomplete selection can temporarily join a new
+          // mention to a retained one. Wait for its replacement transaction
+          // instead of treating that transient text as a persisted removal.
+          isMentionOpenRef.current
         )
           return;
         const present = new Set(extractMentionPubkeys(text));
