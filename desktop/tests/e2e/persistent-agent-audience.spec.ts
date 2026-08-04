@@ -110,8 +110,8 @@ async function readAudience(page: Page, scope = SCOPE) {
   );
 }
 
-async function readLatestOutgoingMentionPubkeys(page: Page) {
-  return page.evaluate(() => {
+async function readOutgoingMentionPubkeys(page: Page, content: string) {
+  return page.evaluate((expectedContent) => {
     const entries =
       (
         window as Window & {
@@ -132,9 +132,11 @@ async function readLatestOutgoingMentionPubkeys(page: Page) {
       try {
         const frame = JSON.parse(data) as [
           string,
-          { tags?: string[][] },
+          { content?: string; tags?: string[][] },
         ];
-        if (frame[0] !== "EVENT") continue;
+        if (frame[0] !== "EVENT" || !frame[1].content?.includes(expectedContent)) {
+          continue;
+        }
         return (
           frame[1].tags
             ?.filter((tag) => tag[0] === "p")
@@ -146,7 +148,7 @@ async function readLatestOutgoingMentionPubkeys(page: Page) {
     }
 
     return null;
-  });
+  }, content);
 }
 
 test("first thread open inherits explicitly addressed agents in authored order", async ({
@@ -398,7 +400,7 @@ test("manual audience exclusions can be re-added with @agent selection", async (
   await expect.poll(() => readAudience(page)).toEqual([AGENT_B]);
   await input.pressSequentially("hello");
   await composer.getByTestId("send-message").click();
-  await expect.poll(() => readLatestOutgoingMentionPubkeys(page)).toEqual([
+  await expect.poll(() => readOutgoingMentionPubkeys(page, "hello")).toEqual([
     AGENT_B,
     AGENT_A,
   ]);
