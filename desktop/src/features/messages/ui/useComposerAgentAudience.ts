@@ -54,7 +54,6 @@ export function useComposerAgentAudience({
   onSuccessfulExplicitAgentAudience:
     | ((audience: {
         channelId: string;
-        expectedAudiencePubkeys: string[];
         expectedGeneration: number;
         expectedRevision: number | null;
         explicitAgentPubkeys: string[];
@@ -217,7 +216,6 @@ export function useComposerAgentAudience({
       ...promotion
     }: {
       channelId: string;
-      expectedAudiencePubkeys: string[];
       expectedGeneration: number;
       expectedRevision: number | null;
       explicitAgentPubkeys: string[];

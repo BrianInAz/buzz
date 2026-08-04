@@ -25,7 +25,6 @@ import { useMediaUpload } from "@/features/messages/lib/useMediaUpload";
 import { useMentions } from "@/features/messages/lib/useMentions";
 import { diffAddedMentionPubkeys } from "@/features/messages/lib/threading";
 import {
-  getPersistentAgentAudience,
   getPersistentAgentAudienceRevision,
   getPersistentAgentAudienceScope,
 } from "@/features/messages/lib/persistentAgentAudience";
@@ -617,9 +616,6 @@ function MessageComposerImpl({
         spoileredAttachmentUrls,
         trimmed,
         audienceGeneration,
-        expectedAudiencePubkeys: audienceScope
-          ? getPersistentAgentAudience(audienceScope)
-          : [],
         // Snapshot the store revision at submit time. A chip removal may have
         // happened in the current event turn, before React re-renders this
         // composer; a later removal still advances the revision and wins.

@@ -125,10 +125,6 @@ export function getPersistentAgentAudienceRevision(scope: string): number {
   return revisions.get(scope) ?? defaultRevision;
 }
 
-export function getPersistentAgentAudience(scope: string): string[] {
-  return [...(audiences[scope] ?? [])];
-}
-
 export function initializePersistentAgentAudience(
   scope: string,
   pubkeys: Iterable<string>,
@@ -159,43 +155,28 @@ export function setPersistentAgentAudience(
 }
 
 export function promotePersistentAgentAudience({
-  expectedAudiencePubkeys,
   expectedGeneration,
   expectedRevision,
   explicitAgentPubkeys,
   scope,
 }: {
-  expectedAudiencePubkeys?: string[];
   expectedGeneration: number;
   expectedRevision: number | null;
   explicitAgentPubkeys: string[];
   scope: string | null;
 }): void {
-  const expectedAudience = expectedAudiencePubkeys
-    ? normalizePubkeys(expectedAudiencePubkeys)
-    : null;
-  const currentAudience = scope ? audiences[scope] ?? [] : [];
-  const revisionMatches =
-    expectedRevision === null ||
-    (scope !== null &&
-      getPersistentAgentAudienceRevision(scope) === expectedRevision);
-  const audienceMatches =
-    expectedAudience !== null &&
-    expectedAudience.length === currentAudience.length &&
-    expectedAudience.every(
-      (pubkey, index) => pubkey === currentAudience[index],
-    );
   if (
     !enabled ||
     expectedGeneration !== generation ||
     !scope ||
-    (!revisionMatches && !audienceMatches)
+    (expectedRevision !== null &&
+      getPersistentAgentAudienceRevision(scope) !== expectedRevision)
   ) {
     return;
   }
   setPersistentAgentAudience(scope, [
     ...explicitAgentPubkeys,
-    ...currentAudience,
+    ...(audiences[scope] ?? []),
   ]);
 }
 
