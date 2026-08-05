@@ -561,7 +561,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 26);
+        assert_eq!(migrations.len(), 27);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -919,6 +919,19 @@ mod tests {
         assert!(heartbeat.contains("epoch"));
         assert!(heartbeat.contains("INSERT INTO replica_heartbeat (id) VALUES (1)"));
         assert!(heartbeat.contains("_operator_global_tables"));
+
+        // NIP-AD (kinds 44300/44301) FTS exclusion: additive migration, never
+        // folded into 0001 — same brownfield checksum rule as 0005/0014. It
+        // captures the current generated expression and wraps it with the new
+        // exclusion, so 0001 must NOT carry 44300/44301.
+        assert_eq!(migrations[26].version, 27);
+        let agent_draft_fts = migrations[26].sql.as_str();
+        assert!(agent_draft_fts.contains("search_tsv"));
+        assert!(agent_draft_fts.contains("44300"));
+        assert!(agent_draft_fts.contains("44301"));
+        assert!(agent_draft_fts.contains("pg_get_expr"));
+        assert!(!migrations[0].sql.as_str().contains("44300"));
+        assert!(!migrations[0].sql.as_str().contains("44301"));
     }
 
     #[test]

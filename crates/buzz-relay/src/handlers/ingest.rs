@@ -12,14 +12,15 @@ use uuid::Uuid;
 use buzz_auth::Scope;
 use buzz_core::kind::{
     event_kind_u32, is_identity_archive_request_kind, is_parameterized_replaceable,
-    is_relay_admin_kind, KIND_AGENT_ENGRAM, KIND_AGENT_PROFILE, KIND_AGENT_TURN_METRIC,
-    KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_AUTH, KIND_BOOKMARK_LIST, KIND_BOOKMARK_SET,
-    KIND_CANVAS, KIND_CONTACT_LIST, KIND_DELETION, KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN,
-    KIND_EMOJI_LIST, KIND_EMOJI_SET, KIND_EVENT_REMINDER, KIND_FOLLOW_SET, KIND_FORUM_COMMENT,
-    KIND_FORUM_POST, KIND_FORUM_VOTE, KIND_GIFT_WRAP, KIND_GIT_ISSUE, KIND_GIT_PATCH,
-    KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST, KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE,
-    KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT, KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN,
-    KIND_HUDDLE_ENDED, KIND_HUDDLE_GUIDELINES, KIND_HUDDLE_PARTICIPANT_JOINED,
+    is_relay_admin_kind, KIND_AGENT_DRAFT_REQUEST, KIND_AGENT_DRAFT_RESOLUTION, KIND_AGENT_ENGRAM,
+    KIND_AGENT_PROFILE, KIND_AGENT_TURN_METRIC, KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_AUTH,
+    KIND_BOOKMARK_LIST, KIND_BOOKMARK_SET, KIND_CANVAS, KIND_CONTACT_LIST, KIND_DELETION,
+    KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN, KIND_EMOJI_LIST, KIND_EMOJI_SET,
+    KIND_EVENT_REMINDER, KIND_FOLLOW_SET, KIND_FORUM_COMMENT, KIND_FORUM_POST, KIND_FORUM_VOTE,
+    KIND_GIFT_WRAP, KIND_GIT_ISSUE, KIND_GIT_PATCH, KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST,
+    KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE, KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT,
+    KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN, KIND_HUDDLE_ENDED, KIND_HUDDLE_GUIDELINES,
+    KIND_HUDDLE_PARTICIPANT_JOINED,
     KIND_HUDDLE_PARTICIPANT_LEFT, KIND_HUDDLE_STARTED, KIND_IA_ARCHIVE_REQUEST,
     KIND_IA_UNARCHIVE_REQUEST, KIND_LONG_FORM, KIND_MANAGED_AGENT, KIND_MEMBER_ADDED_NOTIFICATION,
     KIND_MEMBER_REMOVED_NOTIFICATION, KIND_MODERATION_BAN, KIND_MODERATION_RESOLVE_REPORT,
@@ -219,6 +220,9 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         }
         // NIP-AM: agent turn metrics are agent-authored global events (encrypted to owner).
         KIND_AGENT_TURN_METRIC => Ok(Scope::MessagesWrite),
+        // NIP-AD: agent draft requests/resolutions are agent/owner-authored
+        // global events (encrypted to the counterparty).
+        KIND_AGENT_DRAFT_REQUEST | KIND_AGENT_DRAFT_RESOLUTION => Ok(Scope::MessagesWrite),
         // NIP-56 reports are ordinary member writes into the mod-only queue.
         // Ingest persists them to `moderation_reports` and suppresses public
         // storage/fanout; reports are signals, never enforcement triggers.
@@ -468,6 +472,10 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
             // NIP-AM: agent turn metrics are owner-scoped global events.
             // Channel identity is encrypted inside the payload — no `h` tag.
             | KIND_AGENT_TURN_METRIC
+            // NIP-AD: agent drafts are owner/agent-scoped global events.
+            // Channel identity is encrypted inside the payload — no `h` tag.
+            | KIND_AGENT_DRAFT_REQUEST
+            | KIND_AGENT_DRAFT_RESOLUTION
             // NIP-PL leases are author-owned, addressable global state.
             | super::push_lease::KIND_PUSH_LEASE
     )
@@ -1592,6 +1600,147 @@ fn validate_agent_turn_metric_envelope(event: &nostr::Event) -> Result<(), Strin
     Ok(())
 }
 
+/// Shared NIP-AD envelope checks for kinds 44300/44301.
+///
+/// Validates (without touching the encrypted payload):
+/// - No `h` tag (channel identity belongs inside the encrypted payload).
+/// - Exactly two `p` tags, both 64 lowercase hex, forming the set `{owner, agent}`
+///   with `owner != agent`.
+/// - Exactly one `agent` tag, 64 lowercase hex, equal to one of the two `p` tags.
+/// - Content syntactically resembles NIP-44 v2 ciphertext (delegated to
+///   `validate_engram_nip44_content`).
+///
+/// Returns `(owner_hex, agent_hex)` where `agent_hex` is the `agent` tag value
+/// and `owner_hex` is the `p` tag that is not the agent. Ownership
+/// (`is_agent_owner`) and the author-direction check are performed by the
+/// per-kind validators and the async DB check in `ingest_event_inner`.
+fn validate_agent_draft_common_envelope(
+    event: &nostr::Event,
+) -> Result<(String, String), String> {
+    let mut p_tags: Vec<&str> = Vec::new();
+    let mut agent_tags: Vec<&str> = Vec::new();
+    let mut has_h_tag = false;
+
+    for tag in event.tags.iter() {
+        let parts = tag.as_slice();
+        if parts.len() < 2 {
+            continue;
+        }
+        match parts[0].as_str() {
+            "p" => p_tags.push(&parts[1]),
+            "agent" => agent_tags.push(&parts[1]),
+            "h" => has_h_tag = true,
+            _ => {}
+        }
+    }
+
+    if has_h_tag {
+        return Err(
+            "agent-draft event must not have an `h` tag (channel identity belongs inside the encrypted payload)".to_string(),
+        );
+    }
+
+    if p_tags.len() != 2 {
+        return Err(format!(
+            "agent-draft event must have exactly two `p` tags (got {})",
+            p_tags.len()
+        ));
+    }
+    for p in &p_tags {
+        if p.len() != 64
+            || !p
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            return Err("agent-draft `p` tag must be 64 lowercase hex chars".to_string());
+        }
+    }
+    if p_tags[0] == p_tags[1] {
+        return Err("agent-draft `p` tags must be distinct (owner != agent)".to_string());
+    }
+
+    if agent_tags.len() != 1 {
+        return Err(format!(
+            "agent-draft event must have exactly one `agent` tag (got {})",
+            agent_tags.len()
+        ));
+    }
+    let agent = agent_tags[0];
+    if agent.len() != 64
+        || !agent
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err("agent-draft `agent` tag must be 64 lowercase hex chars".to_string());
+    }
+    if agent != p_tags[0] && agent != p_tags[1] {
+        return Err("agent-draft `agent` tag must be one of the `p` tags".to_string());
+    }
+
+    // The owner is the `p` tag that is not the agent.
+    let owner = if p_tags[0] == agent { p_tags[1] } else { p_tags[0] };
+
+    // Content must look like a NIP-44 v2 ciphertext (length, base64, version prefix).
+    validate_engram_nip44_content(&event.content)
+        .map_err(|e| e.replace("agent-engram", "agent-draft"))?;
+
+    Ok((owner.to_string(), agent.to_string()))
+}
+
+/// Enforces the NIP-AD kind 44300 envelope (agent → owner draft request).
+///
+/// In addition to the shared checks, the authoring pubkey MUST equal the
+/// `agent` tag (the agent authors the request).
+fn validate_agent_draft_request_envelope(event: &nostr::Event) -> Result<(), String> {
+    let (owner_hex, agent_hex) = validate_agent_draft_common_envelope(event)?;
+    if event.pubkey.to_hex() != agent_hex {
+        return Err(
+            "agent-draft-request event must be authored by the agent (event pubkey == agent tag)"
+                .to_string(),
+        );
+    }
+    let _ = owner_hex;
+    Ok(())
+}
+
+/// Enforces the NIP-AD kind 44301 envelope (owner → agent draft resolution).
+///
+/// In addition to the shared checks, the authoring pubkey MUST equal the owner
+/// (the `p` tag that is not the agent), and there MUST be exactly one `e` tag
+/// of 64 lowercase hex (the request event id).
+fn validate_agent_draft_resolution_envelope(event: &nostr::Event) -> Result<(), String> {
+    let (owner_hex, _agent_hex) = validate_agent_draft_common_envelope(event)?;
+    if event.pubkey.to_hex() != owner_hex {
+        return Err(
+            "agent-draft-resolution event must be authored by the owner (event pubkey == owner p tag)"
+                .to_string(),
+        );
+    }
+
+    let mut e_tags: Vec<&str> = Vec::new();
+    for tag in event.tags.iter() {
+        let parts = tag.as_slice();
+        if parts.len() >= 2 && parts[0].as_str() == "e" {
+            e_tags.push(&parts[1]);
+        }
+    }
+    if e_tags.len() != 1 {
+        return Err(format!(
+            "agent-draft-resolution event must have exactly one `e` tag (got {})",
+            e_tags.len()
+        ));
+    }
+    let e = e_tags[0];
+    if e.len() != 64
+        || !e
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err("agent-draft-resolution `e` tag must be 64 lowercase hex chars".to_string());
+    }
+    Ok(())
+}
+
 /// Parse a NIP-ER `not_before` tag value into a Unix timestamp.
 ///
 /// The value MUST be a decimal integer string containing only ASCII digits, with
@@ -2396,6 +2545,60 @@ async fn ingest_event_inner(
             return Err(IngestError::AuthFailed(
                 "restricted: agent-turn-metric `p` tag must be the registered owner of this agent"
                     .into(),
+            ));
+        }
+    }
+
+    if kind_u32 == KIND_AGENT_DRAFT_REQUEST || kind_u32 == KIND_AGENT_DRAFT_RESOLUTION {
+        if kind_u32 == KIND_AGENT_DRAFT_REQUEST {
+            validate_agent_draft_request_envelope(&event)
+                .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
+        } else {
+            validate_agent_draft_resolution_envelope(&event)
+                .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
+        }
+
+        // Ownership check: the owner `p` tag (the one that is not the agent)
+        // must be the registered owner of the agent. Tag shape is already
+        // verified above; these extractions are infallible.
+        let agent_hex = event
+            .tags
+            .iter()
+            .find_map(|t| {
+                let parts = t.as_slice();
+                if parts.len() >= 2 && parts[0].as_str() == "agent" {
+                    Some(parts[1].as_str())
+                } else {
+                    None
+                }
+            })
+            .expect("agent tag present (validated above)");
+        let owner_hex = event
+            .tags
+            .iter()
+            .find_map(|t| {
+                let parts = t.as_slice();
+                if parts.len() >= 2 && parts[0].as_str() == "p" && parts[1].as_str() != agent_hex {
+                    Some(parts[1].as_str())
+                } else {
+                    None
+                }
+            })
+            .expect("owner p tag present (validated above)");
+        let agent_bytes = hex::decode(agent_hex).expect("hex validated above");
+        let owner_bytes = hex::decode(owner_hex).expect("hex validated above");
+        let is_owner = state
+            .db
+            .is_agent_owner(tenant.community(), &agent_bytes, &owner_bytes)
+            .await
+            .map_err(|e| {
+                IngestError::Internal(format!(
+                    "error: db error checking agent-draft ownership: {e}"
+                ))
+            })?;
+        if !is_owner {
+            return Err(IngestError::AuthFailed(
+                "restricted: agent draft is not authorized for this agent owner".into(),
             ));
         }
     }
@@ -3267,6 +3470,8 @@ mod tests {
             KIND_TEAM,
             KIND_MANAGED_AGENT,
             KIND_AGENT_TURN_METRIC,
+            KIND_AGENT_DRAFT_REQUEST,
+            KIND_AGENT_DRAFT_RESOLUTION,
         ];
         for kind in migrated {
             assert!(
@@ -3311,6 +3516,26 @@ mod tests {
             Scope::MessagesWrite,
             "kind:44200 requires MessagesWrite scope"
         );
+    }
+
+    #[test]
+    fn agent_draft_kinds_are_global_only_and_in_scope_allowlist() {
+        let dummy = make_dummy_event();
+        for kind in [KIND_AGENT_DRAFT_REQUEST, KIND_AGENT_DRAFT_RESOLUTION] {
+            assert!(
+                is_global_only_kind(kind),
+                "kind:{kind} must be global-only (no h tag)"
+            );
+            assert!(
+                !requires_h_channel_scope(kind),
+                "kind:{kind} must not require an h-tag"
+            );
+            assert_eq!(
+                required_scope_for_kind(kind, &dummy).unwrap(),
+                Scope::MessagesWrite,
+                "kind:{kind} requires MessagesWrite scope"
+            );
+        }
     }
 
     #[test]
@@ -4735,6 +4960,288 @@ mod tests {
         let err = validate_agent_turn_metric_envelope(&ev).unwrap_err();
         // error comes from validate_engram_nip44_content with label replaced
         assert!(err.contains("agent-turn-metric"), "got: {err}");
+    }
+
+    // ── NIP-AD draft envelope tests ─────────────────────────────────────────
+
+    fn make_agent_draft(
+        signer: &nostr::Keys,
+        kind: u32,
+        tags: Vec<nostr::Tag>,
+        content: &str,
+    ) -> nostr::Event {
+        nostr::EventBuilder::new(nostr::Kind::Custom(kind as u16), content)
+            .tags(tags)
+            // The author's own pubkey is one of the two `p` tags; nostr's
+            // EventBuilder discards self-`p`-tags unless self-tagging is allowed.
+            .allow_self_tagging()
+            .sign_with_keys(signer)
+            .unwrap()
+    }
+
+    fn canonical_request_tags(agent: &nostr::Keys, owner_hex: &str) -> Vec<nostr::Tag> {
+        let agent_hex = agent.public_key().to_hex();
+        vec![
+            nostr::Tag::parse(["p", owner_hex]).unwrap(),
+            nostr::Tag::parse(["p", &agent_hex]).unwrap(),
+            nostr::Tag::parse(["agent", &agent_hex]).unwrap(),
+        ]
+    }
+
+    fn canonical_resolution_tags(owner: &nostr::Keys, agent_hex: &str) -> Vec<nostr::Tag> {
+        let owner_hex = owner.public_key().to_hex();
+        vec![
+            nostr::Tag::parse(["p", &owner_hex]).unwrap(),
+            nostr::Tag::parse(["p", agent_hex]).unwrap(),
+            nostr::Tag::parse(["agent", agent_hex]).unwrap(),
+            nostr::Tag::parse([
+                "e",
+                "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+            ])
+            .unwrap(),
+        ]
+    }
+
+    #[test]
+    fn agent_draft_request_envelope_accepts_canonical() {
+        let agent = nostr::Keys::generate();
+        let owner_hex = "b".repeat(64);
+        let tags = canonical_request_tags(&agent, &owner_hex);
+        let ev = make_agent_draft(&agent, KIND_AGENT_DRAFT_REQUEST, tags, &fake_nip44_v2());
+        assert!(validate_agent_draft_request_envelope(&ev).is_ok());
+    }
+
+    #[test]
+    fn agent_draft_request_envelope_rejects_wrong_p_cardinality() {
+        let agent = nostr::Keys::generate();
+        let owner_hex = "b".repeat(64);
+        let agent_hex = agent.public_key().to_hex();
+        // Only one `p` tag.
+        let ev = make_agent_draft(
+            &agent,
+            KIND_AGENT_DRAFT_REQUEST,
+            vec![
+                nostr::Tag::parse(["p", &owner_hex]).unwrap(),
+                nostr::Tag::parse(["agent", &agent_hex]).unwrap(),
+            ],
+            &fake_nip44_v2(),
+        );
+        let err = validate_agent_draft_request_envelope(&ev).unwrap_err();
+        assert!(err.contains("two `p` tags"), "got: {err}");
+    }
+
+    #[test]
+    fn agent_draft_request_envelope_rejects_uppercase_hex() {
+        let agent = nostr::Keys::generate();
+        let owner_hex = "B".repeat(64); // uppercase
+        let tags = canonical_request_tags(&agent, &owner_hex);
+        let ev = make_agent_draft(&agent, KIND_AGENT_DRAFT_REQUEST, tags, &fake_nip44_v2());
+        let err = validate_agent_draft_request_envelope(&ev).unwrap_err();
+        assert!(err.contains("lowercase hex"), "got: {err}");
+    }
+
+    #[test]
+    fn agent_draft_request_envelope_rejects_owner_equals_agent() {
+        let agent = nostr::Keys::generate();
+        let agent_hex = agent.public_key().to_hex();
+        // Both `p` tags are the agent's own pubkey.
+        let ev = make_agent_draft(
+            &agent,
+            KIND_AGENT_DRAFT_REQUEST,
+            vec![
+                nostr::Tag::parse(["p", &agent_hex]).unwrap(),
+                nostr::Tag::parse(["p", &agent_hex]).unwrap(),
+                nostr::Tag::parse(["agent", &agent_hex]).unwrap(),
+            ],
+            &fake_nip44_v2(),
+        );
+        let err = validate_agent_draft_request_envelope(&ev).unwrap_err();
+        assert!(err.contains("distinct"), "got: {err}");
+    }
+
+    #[test]
+    fn agent_draft_request_envelope_rejects_missing_agent_tag() {
+        let agent = nostr::Keys::generate();
+        let owner_hex = "b".repeat(64);
+        let agent_hex = agent.public_key().to_hex();
+        let ev = make_agent_draft(
+            &agent,
+            KIND_AGENT_DRAFT_REQUEST,
+            vec![
+                nostr::Tag::parse(["p", &owner_hex]).unwrap(),
+                nostr::Tag::parse(["p", &agent_hex]).unwrap(),
+            ],
+            &fake_nip44_v2(),
+        );
+        let err = validate_agent_draft_request_envelope(&ev).unwrap_err();
+        assert!(err.contains("`agent` tag"), "got: {err}");
+    }
+
+    #[test]
+    fn agent_draft_request_envelope_rejects_duplicate_agent_tag() {
+        let agent = nostr::Keys::generate();
+        let owner_hex = "b".repeat(64);
+        let agent_hex = agent.public_key().to_hex();
+        let ev = make_agent_draft(
+            &agent,
+            KIND_AGENT_DRAFT_REQUEST,
+            vec![
+                nostr::Tag::parse(["p", &owner_hex]).unwrap(),
+                nostr::Tag::parse(["p", &agent_hex]).unwrap(),
+                nostr::Tag::parse(["agent", &agent_hex]).unwrap(),
+                nostr::Tag::parse(["agent", &agent_hex]).unwrap(),
+            ],
+            &fake_nip44_v2(),
+        );
+        let err = validate_agent_draft_request_envelope(&ev).unwrap_err();
+        assert!(err.contains("`agent` tag"), "got: {err}");
+    }
+
+    #[test]
+    fn agent_draft_request_envelope_rejects_mismatched_agent_tag() {
+        let agent = nostr::Keys::generate();
+        let owner_hex = "b".repeat(64);
+        let agent_hex = agent.public_key().to_hex();
+        let stray_hex = "c".repeat(64); // not event.pubkey and not a `p` tag
+        let ev = make_agent_draft(
+            &agent,
+            KIND_AGENT_DRAFT_REQUEST,
+            vec![
+                nostr::Tag::parse(["p", &owner_hex]).unwrap(),
+                nostr::Tag::parse(["p", &agent_hex]).unwrap(),
+                nostr::Tag::parse(["agent", &stray_hex]).unwrap(),
+            ],
+            &fake_nip44_v2(),
+        );
+        let err = validate_agent_draft_request_envelope(&ev).unwrap_err();
+        assert!(err.contains("one of the `p` tags"), "got: {err}");
+    }
+
+    #[test]
+    fn agent_draft_request_envelope_rejects_h_tag() {
+        let agent = nostr::Keys::generate();
+        let owner_hex = "b".repeat(64);
+        let agent_hex = agent.public_key().to_hex();
+        let ev = make_agent_draft(
+            &agent,
+            KIND_AGENT_DRAFT_REQUEST,
+            vec![
+                nostr::Tag::parse(["p", &owner_hex]).unwrap(),
+                nostr::Tag::parse(["p", &agent_hex]).unwrap(),
+                nostr::Tag::parse(["agent", &agent_hex]).unwrap(),
+                nostr::Tag::parse(["h", "some-channel-uuid"]).unwrap(),
+            ],
+            &fake_nip44_v2(),
+        );
+        let err = validate_agent_draft_request_envelope(&ev).unwrap_err();
+        assert!(err.contains("`h` tag"), "got: {err}");
+    }
+
+    #[test]
+    fn agent_draft_request_envelope_rejects_bad_content() {
+        let agent = nostr::Keys::generate();
+        let owner_hex = "b".repeat(64);
+        let tags = canonical_request_tags(&agent, &owner_hex);
+        let ev = make_agent_draft(&agent, KIND_AGENT_DRAFT_REQUEST, tags, "not-a-ciphertext");
+        let err = validate_agent_draft_request_envelope(&ev).unwrap_err();
+        assert!(err.contains("agent-draft"), "got: {err}");
+    }
+
+    #[test]
+    fn agent_draft_request_envelope_rejects_wrong_author() {
+        // Signed by the owner, not the agent — event.pubkey != agent tag.
+        let owner = nostr::Keys::generate();
+        let agent = nostr::Keys::generate();
+        let owner_hex = owner.public_key().to_hex();
+        let agent_hex = agent.public_key().to_hex();
+        let ev = make_agent_draft(
+            &owner,
+            KIND_AGENT_DRAFT_REQUEST,
+            vec![
+                nostr::Tag::parse(["p", &owner_hex]).unwrap(),
+                nostr::Tag::parse(["p", &agent_hex]).unwrap(),
+                nostr::Tag::parse(["agent", &agent_hex]).unwrap(),
+            ],
+            &fake_nip44_v2(),
+        );
+        let err = validate_agent_draft_request_envelope(&ev).unwrap_err();
+        assert!(err.contains("authored by the agent"), "got: {err}");
+    }
+
+    #[test]
+    fn agent_draft_resolution_envelope_accepts_canonical() {
+        let owner = nostr::Keys::generate();
+        let agent_hex = "c".repeat(64);
+        let tags = canonical_resolution_tags(&owner, &agent_hex);
+        let ev = make_agent_draft(&owner, KIND_AGENT_DRAFT_RESOLUTION, tags, &fake_nip44_v2());
+        assert!(validate_agent_draft_resolution_envelope(&ev).is_ok());
+    }
+
+    #[test]
+    fn agent_draft_resolution_envelope_rejects_missing_e_tag() {
+        let owner = nostr::Keys::generate();
+        let agent_hex = "c".repeat(64);
+        let owner_hex = owner.public_key().to_hex();
+        let ev = make_agent_draft(
+            &owner,
+            KIND_AGENT_DRAFT_RESOLUTION,
+            vec![
+                nostr::Tag::parse(["p", &owner_hex]).unwrap(),
+                nostr::Tag::parse(["p", &agent_hex]).unwrap(),
+                nostr::Tag::parse(["agent", &agent_hex]).unwrap(),
+            ],
+            &fake_nip44_v2(),
+        );
+        let err = validate_agent_draft_resolution_envelope(&ev).unwrap_err();
+        assert!(err.contains("`e` tag"), "got: {err}");
+    }
+
+    #[test]
+    fn agent_draft_resolution_envelope_rejects_duplicate_e_tag() {
+        let owner = nostr::Keys::generate();
+        let agent_hex = "c".repeat(64);
+        let owner_hex = owner.public_key().to_hex();
+        let e = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2";
+        let ev = make_agent_draft(
+            &owner,
+            KIND_AGENT_DRAFT_RESOLUTION,
+            vec![
+                nostr::Tag::parse(["p", &owner_hex]).unwrap(),
+                nostr::Tag::parse(["p", &agent_hex]).unwrap(),
+                nostr::Tag::parse(["agent", &agent_hex]).unwrap(),
+                nostr::Tag::parse(["e", e]).unwrap(),
+                nostr::Tag::parse(["e", e]).unwrap(),
+            ],
+            &fake_nip44_v2(),
+        );
+        let err = validate_agent_draft_resolution_envelope(&ev).unwrap_err();
+        assert!(err.contains("`e` tag"), "got: {err}");
+    }
+
+    #[test]
+    fn agent_draft_resolution_envelope_rejects_wrong_author() {
+        // Signed by the agent, not the owner — event.pubkey != owner p tag.
+        let owner = nostr::Keys::generate();
+        let agent = nostr::Keys::generate();
+        let owner_hex = owner.public_key().to_hex();
+        let agent_hex = agent.public_key().to_hex();
+        let ev = make_agent_draft(
+            &agent,
+            KIND_AGENT_DRAFT_RESOLUTION,
+            vec![
+                nostr::Tag::parse(["p", &owner_hex]).unwrap(),
+                nostr::Tag::parse(["p", &agent_hex]).unwrap(),
+                nostr::Tag::parse(["agent", &agent_hex]).unwrap(),
+                nostr::Tag::parse([
+                    "e",
+                    "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+                ])
+                .unwrap(),
+            ],
+            &fake_nip44_v2(),
+        );
+        let err = validate_agent_draft_resolution_envelope(&ev).unwrap_err();
+        assert!(err.contains("authored by the owner"), "got: {err}");
     }
 
     /// The HTTP bridge's `submit_event` 400 arm and the WS `EVENT` handler's
