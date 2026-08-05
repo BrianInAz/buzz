@@ -120,7 +120,9 @@ moka    = { version = "0.12", features = ["sync"] }
 futures-util = "0.3"
 
 # WebSocket client (test client)
-tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+# native roots: WSS must trust private-CA relays (e.g. homelab Home Lab CA);
+# webpki-roots baked in a Mozilla-only bundle and can never trust a private CA.
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
 url = "2"
 
 # Property-based testing (dev-only)
