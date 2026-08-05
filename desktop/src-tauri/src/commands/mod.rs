@@ -1,6 +1,7 @@
 mod agent_auth;
 mod agent_config;
 mod agent_discovery;
+mod agent_drafts;
 mod agent_logs;
 mod agent_metric_archive;
 mod agent_model_process;
@@ -64,6 +65,7 @@ mod workspace;
 pub use agent_auth::*;
 pub use agent_config::*;
 pub use agent_discovery::*;
+pub use agent_drafts::*;
 pub use agent_logs::*;
 pub use agent_metric_archive::*;
 pub use agent_models::*;
