@@ -8,10 +8,7 @@
 
 use std::collections::HashMap;
 
-use buzz_core::agent_draft::{
-    decrypt_agent_draft_request, decrypt_agent_draft_resolution, AgentDraftRequest,
-    AgentDraftResolutionStatus,
-};
+use buzz_core::agent_draft::{decrypt_agent_draft_request, AgentDraftRequest};
 use serde_json::{json, Value};
 
 use crate::client::BuzzClient;
@@ -74,18 +71,20 @@ async fn list_drafts(
     });
     let resolutions = client.query_all(resolution_filter).await?;
 
-    // Decrypt resolutions into request_id -> status.
-    let mut resolved: HashMap<String, String> = HashMap::new();
+    // Resolved-ness is derived from the cleartext `e` tag of 44301 events
+    // (which references the request event id). The owner cannot decrypt 44301
+    // (it is encrypted to the agent), so we never rely on decryption here.
+    let mut resolved_event_ids: HashMap<String, String> = HashMap::new();
     for raw in resolutions {
         let event: nostr::Event = match serde_json::from_value(raw) {
             Ok(e) => e,
             Err(_) => continue,
         };
-        if let Ok(payload) = decrypt_agent_draft_resolution(client.keys(), &event) {
-            resolved.insert(
-                payload.request_id,
-                resolution_status_str(payload.status).to_string(),
-            );
+        for tag in event.tags.iter() {
+            let parts = tag.as_slice();
+            if parts.len() >= 2 && parts[0].as_str() == "e" {
+                resolved_event_ids.insert(parts[1].to_string(), event.id.to_hex());
+            }
         }
     }
 
@@ -104,10 +103,11 @@ async fn list_drafts(
                 continue;
             }
         }
-        let status = resolved
-            .get(&payload.request_id)
-            .cloned()
-            .unwrap_or_else(|| "pending".to_string());
+        let status = if resolved_event_ids.contains_key(&event.id.to_hex()) {
+            "resolved".to_string()
+        } else {
+            "pending".to_string()
+        };
         if !all && status != "pending" {
             continue;
         }
@@ -144,22 +144,18 @@ async fn status_draft(client: &BuzzClient, request_id: &str) -> Result<Option<Va
     });
     let resolutions = client.query_all(resolution_filter).await?;
 
-    let mut resolved: HashMap<String, Value> = HashMap::new();
+    // Resolved-ness from the cleartext `e` tag (the owner cannot decrypt 44301).
+    let mut resolved_event_ids: HashMap<String, String> = HashMap::new();
     for raw in resolutions {
         let event: nostr::Event = match serde_json::from_value(raw) {
             Ok(e) => e,
             Err(_) => continue,
         };
-        if let Ok(payload) = decrypt_agent_draft_resolution(client.keys(), &event) {
-            resolved.insert(
-                payload.request_id,
-                json!({
-                    "status": resolution_status_str(payload.status),
-                    "event_id": event.id.to_hex(),
-                    "timestamp": payload.timestamp,
-                    "reason": payload.reason,
-                }),
-            );
+        for tag in event.tags.iter() {
+            let parts = tag.as_slice();
+            if parts.len() >= 2 && parts[0].as_str() == "e" {
+                resolved_event_ids.insert(parts[1].to_string(), event.id.to_hex());
+            }
         }
     }
 
@@ -179,10 +175,11 @@ async fn status_draft(client: &BuzzClient, request_id: &str) -> Result<Option<Va
             AgentDraftRequest::Create(_) => "create",
             AgentDraftRequest::Update(_) => "update",
         };
-        let resolution = resolved.get(request_id);
-        let status = resolution
-            .map(|r| r["status"].clone())
-            .unwrap_or_else(|| json!("pending"));
+        let status = if resolved_event_ids.contains_key(&event.id.to_hex()) {
+            "resolved"
+        } else {
+            "pending"
+        };
         let mut out = json!({
             "request_id": payload.request_id,
             "event_id": event.id.to_hex(),
@@ -192,18 +189,10 @@ async fn status_draft(client: &BuzzClient, request_id: &str) -> Result<Option<Va
             "created_at": event.created_at.as_secs(),
             "status": status,
         });
-        if let Some(r) = resolution {
-            out["resolution"] = r.clone();
+        if let Some(resolution_event_id) = resolved_event_ids.get(&event.id.to_hex()) {
+            out["resolution"] = json!({ "event_id": resolution_event_id });
         }
         return Ok(Some(out));
     }
     Ok(None)
-}
-
-fn resolution_status_str(status: AgentDraftResolutionStatus) -> &'static str {
-    match status {
-        AgentDraftResolutionStatus::Accepted => "accepted",
-        AgentDraftResolutionStatus::Declined => "declined",
-        AgentDraftResolutionStatus::Superseded => "superseded",
-    }
 }
