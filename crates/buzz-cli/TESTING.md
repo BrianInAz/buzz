@@ -482,6 +482,36 @@ buzz notes get --name dco-check   # exits non-zero: not found
 buzz notes rm --name does-not-exist   # exits non-zero
 ```
 
+### 6.13 Agent Drafts (NIP-AD, kinds 44300/44301)
+
+`buzz agents draft-create` / `draft-update` publish a **durable** kind 44300
+request for owner review in Buzz Desktop (replacing the old ephemeral
+kind-24200 path). `buzz agents drafts list|status` read them back.
+
+```bash
+# Publish a create draft (requires BUZZ_AUTH_TAG; owner is the attested owner)
+buzz agents draft-create --channel <UUID> --display-name "dev-coder" \
+  --system-prompt "You are a coding specialist."
+# → {event_id, request_id, action, saved:false, message}
+
+# List pending drafts (default) — works as the agent or the owner
+buzz agents drafts list --pending | jq .
+# → [{request_id, event_id, action, channel_id, agent_pubkey, created_at, status}]
+
+# List all drafts including resolved ones
+buzz agents drafts list --all | jq .
+
+# Filter to a single channel
+buzz agents drafts list --channel <UUID> | jq .
+
+# Status of a single draft
+buzz agents drafts status --request-id <UUID> | jq .
+# → {request_id, event_id, action, channel_id, agent_pubkey, created_at, status, resolution?}
+
+# Unknown request id → exit 1 with {"error":"unknown request_id"}
+buzz agents drafts status --request-id <missing> ; echo $?   # 1
+```
+
 ---
 
 ## 7. Error Path Testing
