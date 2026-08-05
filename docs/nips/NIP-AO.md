@@ -222,6 +222,10 @@ of decrypted payloads and MUST NOT log it at INFO level or above.
 - **NIP-XX (PR #2226)**: NIP-XX defines the agent *output* plane; this NIP defines
   the *observability* plane (internal agent activity). They are complementary and
   non-overlapping.
+- **[NIP-AD](NIP-AD.md)**: the `agent_management_request` telemetry payload
+  previously carried on kind 24200 moved to NIP-AD and is no longer a defined
+  telemetry `kind` value. Agent draft requests/resolutions are durable kinds
+  44300/44301, not NIP-AO frames.
 
 ## Examples
 
