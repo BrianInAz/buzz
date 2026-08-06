@@ -23,6 +23,20 @@ export function AgentManagementDialogs() {
             if (!open) management.dismiss();
           }}
         />
+      ) : management.adoptedAuthTag ? (
+        // Keep the dialog mounted after a successful adopt so the minted
+        // BUZZ_AUTH_TAG stays visible (the draft itself is now resolved).
+        <AgentDraftAdoptDialog
+          adoptedAuthTag={management.adoptedAuthTag}
+          draft={null}
+          error={management.error}
+          isPending={management.isPending}
+          onAdopt={management.adopt}
+          onImportKey={management.importKey}
+          onOpenChange={(open) => {
+            if (!open) management.dismiss();
+          }}
+        />
       ) : null}
       {management.createdAgent ? (
         <SecretRevealDialog

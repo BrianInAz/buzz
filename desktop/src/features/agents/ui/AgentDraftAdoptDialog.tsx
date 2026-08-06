@@ -27,7 +27,7 @@ export function AgentDraftAdoptDialog({
   onImportKey,
   onOpenChange,
 }: {
-  draft: PendingAgentDraft;
+  draft: PendingAgentDraft | null;
   error: string | null;
   isPending: boolean;
   adoptedAuthTag: string | null;
@@ -54,26 +54,28 @@ export function AgentDraftAdoptDialog({
           <DialogHeader className="border-b border-border/60 px-6 py-5 pr-14">
             <DialogTitle>Adopt this agent</DialogTitle>
             <DialogDescription>
-              {draft.displayName ?? "An agent"} is asking to be registered as
+              {draft?.displayName ?? "An agent"} is asking to be registered as
               yours. Adopting it attests that you own it — no new key is
               created.
             </DialogDescription>
           </DialogHeader>
 
           <div className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
-            <div className="rounded-2xl border border-border/70 bg-muted/20 p-4">
-              <p className="text-sm font-semibold tracking-tight">
-                {draft.displayName ?? "Unnamed agent"}
-              </p>
-              {draft.systemPrompt ? (
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {draft.systemPrompt}
+            {draft ? (
+              <div className="rounded-2xl border border-border/70 bg-muted/20 p-4">
+                <p className="text-sm font-semibold tracking-tight">
+                  {draft.displayName ?? "Unnamed agent"}
                 </p>
-              ) : null}
-              <code className="mt-3 block break-all rounded-xl border border-border/70 bg-background/80 px-3 py-2 text-xs">
-                {draft.agentPubkey}
-              </code>
-            </div>
+                {draft.systemPrompt ? (
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {draft.systemPrompt}
+                  </p>
+                ) : null}
+                <code className="mt-3 block break-all rounded-xl border border-border/70 bg-background/80 px-3 py-2 text-xs">
+                  {draft.agentPubkey}
+                </code>
+              </div>
+            ) : null}
 
             {adoptedAuthTag ? (
               <div className="rounded-2xl border border-primary/20 bg-primary/10 p-4">

@@ -229,6 +229,22 @@ type MockBridgeOptions = {
     mcp?: MockCommandAvailability;
   };
   managedAgents?: MockManagedAgentSeed[];
+  /** NIP-AD pending agent drafts served by `list_pending_agent_drafts`. */
+  pendingAgentDrafts?: Array<{
+    requestEventId?: string;
+    requestId: string;
+    action: "create" | "update";
+    channelId: string;
+    agentPubkey: string;
+    createdAt?: number;
+    displayName?: string;
+    systemPrompt?: string;
+    agentName?: string;
+    runtime?: string;
+    provider?: string;
+    model?: string;
+    respondTo?: string;
+  }>;
   /** Result returned by the mocked `add_agent_to_huddle` command. */
   addAgentToHuddleResult?: {
     ephemeral_added: boolean;
