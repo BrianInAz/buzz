@@ -371,26 +371,39 @@ mod tests {
             request_id: "9f1c2b3a-4d5e-4f6a-8b7c-1d2e3f4a5b6c".to_string(),
             status: AgentDraftResolutionStatus::Accepted,
             timestamp: "2026-08-05T12:05:00.000Z".to_string(),
-            agent_pubkey: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()),
+            agent_pubkey: Some(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            ),
             reason: Some("Approved".to_string()),
         }
     }
 
-    fn build_request_event(agent_keys: &Keys, owner_pubkey: &PublicKey, ciphertext: String) -> Event {
-        EventBuilder::new(Kind::Custom(crate::kind::KIND_AGENT_DRAFT_REQUEST as u16), ciphertext)
-            .tags([
-                Tag::parse(["p", &owner_pubkey.to_hex()]).unwrap(),
-                Tag::parse(["p", &agent_keys.public_key().to_hex()]).unwrap(),
-                Tag::parse(["agent", &agent_keys.public_key().to_hex()]).unwrap(),
-            ])
-            // The agent's own pubkey is a `p` tag; nostr's EventBuilder discards
-            // self-`p`-tags unless self-tagging is allowed.
-            .allow_self_tagging()
-            .sign_with_keys(agent_keys)
-            .expect("sign")
+    fn build_request_event(
+        agent_keys: &Keys,
+        owner_pubkey: &PublicKey,
+        ciphertext: String,
+    ) -> Event {
+        EventBuilder::new(
+            Kind::Custom(crate::kind::KIND_AGENT_DRAFT_REQUEST as u16),
+            ciphertext,
+        )
+        .tags([
+            Tag::parse(["p", &owner_pubkey.to_hex()]).unwrap(),
+            Tag::parse(["p", &agent_keys.public_key().to_hex()]).unwrap(),
+            Tag::parse(["agent", &agent_keys.public_key().to_hex()]).unwrap(),
+        ])
+        // The agent's own pubkey is a `p` tag; nostr's EventBuilder discards
+        // self-`p`-tags unless self-tagging is allowed.
+        .allow_self_tagging()
+        .sign_with_keys(agent_keys)
+        .expect("sign")
     }
 
-    fn build_resolution_event(owner_keys: &Keys, agent_pubkey: &PublicKey, ciphertext: String) -> Event {
+    fn build_resolution_event(
+        owner_keys: &Keys,
+        agent_pubkey: &PublicKey,
+        ciphertext: String,
+    ) -> Event {
         EventBuilder::new(
             Kind::Custom(crate::kind::KIND_AGENT_DRAFT_RESOLUTION as u16),
             ciphertext,
@@ -399,7 +412,11 @@ mod tests {
             Tag::parse(["p", &owner_keys.public_key().to_hex()]).unwrap(),
             Tag::parse(["p", &agent_pubkey.to_hex()]).unwrap(),
             Tag::parse(["agent", &agent_pubkey.to_hex()]).unwrap(),
-            Tag::parse(["e", "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"]).unwrap(),
+            Tag::parse([
+                "e",
+                "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+            ])
+            .unwrap(),
         ])
         // The owner's own pubkey is a `p` tag; nostr's EventBuilder discards
         // self-`p`-tags unless self-tagging is allowed.

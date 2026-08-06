@@ -171,8 +171,8 @@ pub async fn resolve_agent_draft(
         "superseded" => buzz_core_pkg::agent_draft::AgentDraftResolutionStatus::Superseded,
         other => return Err(format!("invalid status: {other}")),
     };
-    let agent_pubkey = nostr::PublicKey::parse(&agent_pubkey)
-        .map_err(|e| format!("invalid agent pubkey: {e}"))?;
+    let agent_pubkey =
+        nostr::PublicKey::parse(&agent_pubkey).map_err(|e| format!("invalid agent pubkey: {e}"))?;
     let payload = buzz_core_pkg::agent_draft::AgentDraftResolutionPayload {
         version: buzz_core_pkg::agent_draft::AGENT_DRAFT_VERSION,
         request_id,
@@ -295,7 +295,10 @@ mod tests {
         assert_eq!(info.channel_id, payload.channel_id);
         assert_eq!(info.agent_pubkey, agent.public_key().to_hex());
         assert_eq!(info.display_name.as_deref(), Some("dev-coder"));
-        assert_eq!(info.system_prompt.as_deref(), Some("You are a coding specialist."));
+        assert_eq!(
+            info.system_prompt.as_deref(),
+            Some("You are a coding specialist.")
+        );
         assert!(info.agent_name.is_none());
     }
 

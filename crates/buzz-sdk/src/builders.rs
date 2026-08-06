@@ -7,13 +7,13 @@ use buzz_core::{
     kind::{
         KIND_AGENT_DRAFT_REQUEST, KIND_AGENT_DRAFT_RESOLUTION, KIND_AGENT_OBSERVER_FRAME,
         KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_DELETION, KIND_DM_ADD_MEMBER, KIND_DM_OPEN,
-        KIND_EMOJI_SET, KIND_GIT_ISSUE, KIND_GIT_PATCH, KIND_GIT_PR_UPDATE,
-        KIND_GIT_PULL_REQUEST, KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_STATUS_CLOSED,
-        KIND_GIT_STATUS_DRAFT, KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN,
-        KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST, KIND_MODERATION_BAN,
-        KIND_MODERATION_RESOLVE_REPORT, KIND_MODERATION_TIMEOUT, KIND_MODERATION_UNBAN,
-        KIND_MODERATION_UNTIMEOUT, KIND_PRESENCE_UPDATE, KIND_PROJECT, KIND_USER_STATUS,
-        KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER,
+        KIND_EMOJI_SET, KIND_GIT_ISSUE, KIND_GIT_PATCH, KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST,
+        KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT,
+        KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN, KIND_IA_ARCHIVE_REQUEST,
+        KIND_IA_UNARCHIVE_REQUEST, KIND_MODERATION_BAN, KIND_MODERATION_RESOLVE_REPORT,
+        KIND_MODERATION_TIMEOUT, KIND_MODERATION_UNBAN, KIND_MODERATION_UNTIMEOUT,
+        KIND_PRESENCE_UPDATE, KIND_PROJECT, KIND_USER_STATUS, KIND_WORKFLOW_DEF,
+        KIND_WORKFLOW_TRIGGER,
     },
     observer::{
         content_looks_like_nip44, OBSERVER_AGENT_TAG, OBSERVER_FRAME_CONTROL, OBSERVER_FRAME_TAG,
@@ -2405,7 +2405,10 @@ mod tests {
             vec![agent.public_key().to_hex()]
         );
         assert!(!has_tag(&ev, "h", ""));
-        assert!(!ev.tags.iter().any(|t| t.as_slice().first().map(|v| v.as_str()) == Some("h")));
+        assert!(!ev
+            .tags
+            .iter()
+            .any(|t| t.as_slice().first().map(|v| v.as_str()) == Some("h")));
     }
 
     #[test]
@@ -2435,7 +2438,10 @@ mod tests {
             vec![agent.public_key().to_hex()]
         );
         assert_eq!(tag_values(&ev, "e"), vec![request_event_id.to_string()]);
-        assert!(!ev.tags.iter().any(|t| t.as_slice().first().map(|v| v.as_str()) == Some("h")));
+        assert!(!ev
+            .tags
+            .iter()
+            .any(|t| t.as_slice().first().map(|v| v.as_str()) == Some("h")));
     }
 
     #[test]
@@ -2467,8 +2473,8 @@ mod tests {
     #[test]
     fn agent_draft_resolution_rejects_owner_equals_agent() {
         let pk = "a".repeat(64);
-        let err = build_agent_draft_resolution(&pk, &pk, &"c".repeat(64), &fake_nip44())
-            .unwrap_err();
+        let err =
+            build_agent_draft_resolution(&pk, &pk, &"c".repeat(64), &fake_nip44()).unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
     }
 

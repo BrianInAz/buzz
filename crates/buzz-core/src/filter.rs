@@ -346,8 +346,11 @@ mod tests {
             Tag::parse(["p", &owner_keys.public_key().to_hex()]).unwrap(),
             Tag::parse(["p", &agent_keys.public_key().to_hex()]).unwrap(),
             Tag::parse(["agent", &agent_keys.public_key().to_hex()]).unwrap(),
-            Tag::parse(["e", "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"])
-                .unwrap(),
+            Tag::parse([
+                "e",
+                "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+            ])
+            .unwrap(),
         ])
         // The owner's own pubkey is a `p` tag; nostr's EventBuilder discards
         // self-`p`-tags unless self-tagging is allowed.

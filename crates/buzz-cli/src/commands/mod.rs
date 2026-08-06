@@ -1,5 +1,5 @@
-pub mod agents;
 pub mod agent_drafts;
+pub mod agents;
 pub mod channel_templates;
 pub mod channels;
 pub mod dms;

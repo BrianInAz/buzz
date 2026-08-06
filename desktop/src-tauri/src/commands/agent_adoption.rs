@@ -127,8 +127,8 @@ pub async fn adopt_external_agent(
     model: Option<String>,
     respond_to: Option<String>,
 ) -> Result<AdoptExternalAgentResult, String> {
-    let agent_pubkey = nostr::PublicKey::parse(&agent_pubkey)
-        .map_err(|e| format!("invalid agent pubkey: {e}"))?;
+    let agent_pubkey =
+        nostr::PublicKey::parse(&agent_pubkey).map_err(|e| format!("invalid agent pubkey: {e}"))?;
     let agent_hex = agent_pubkey.to_hex();
     let display_name = display_name.trim().to_string();
     if display_name.is_empty() {
@@ -193,15 +193,14 @@ pub async fn import_external_agent_key(
     nsec: String,
     display_name: String,
 ) -> Result<AdoptExternalAgentResult, String> {
-    let agent_pubkey = nostr::PublicKey::parse(&agent_pubkey)
-        .map_err(|e| format!("invalid agent pubkey: {e}"))?;
+    let agent_pubkey =
+        nostr::PublicKey::parse(&agent_pubkey).map_err(|e| format!("invalid agent pubkey: {e}"))?;
     let agent_hex = agent_pubkey.to_hex();
     let display_name = display_name.trim().to_string();
     if display_name.is_empty() {
         return Err("display name is required".to_string());
     }
-    let keys = nostr::Keys::parse(nsec.trim())
-        .map_err(|e| format!("invalid nsec: {e}"))?;
+    let keys = nostr::Keys::parse(nsec.trim()).map_err(|e| format!("invalid nsec: {e}"))?;
     if keys.public_key() != agent_pubkey {
         return Err("nsec does not match the agent pubkey".to_string());
     }
@@ -271,8 +270,8 @@ mod tests {
         // The tag embeds the owner pubkey and is verifiable against the agent.
         let parsed: serde_json::Value = serde_json::from_str(&tag).expect("tag json");
         assert_eq!(parsed[1], serde_json::json!(owner.public_key().to_hex()));
-        let verified = buzz_sdk_pkg::nip_oa::verify_auth_tag(&tag, &agent.public_key())
-            .expect("verify");
+        let verified =
+            buzz_sdk_pkg::nip_oa::verify_auth_tag(&tag, &agent.public_key()).expect("verify");
         assert_eq!(verified, owner.public_key());
     }
 
@@ -281,12 +280,9 @@ mod tests {
         let owner = nostr::Keys::generate();
         let compat_owner = nostr::Keys::parse(&owner.secret_key().to_secret_hex()).unwrap();
         // Owner == agent must be rejected (self-attestation).
-        assert!(buzz_sdk_pkg::nip_oa::compute_auth_tag(
-            &compat_owner,
-            &owner.public_key(),
-            ""
-        )
-        .is_err());
+        assert!(
+            buzz_sdk_pkg::nip_oa::compute_auth_tag(&compat_owner, &owner.public_key(), "").is_err()
+        );
     }
 
     /// Mirrors the runtime spawn guard: non-Local backends are rejected, with
