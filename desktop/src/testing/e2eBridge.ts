@@ -98,6 +98,22 @@ type MockManagedAgentRuntimeSeed = {
   lifecycle?: MockManagedAgentRuntimeRow["lifecycle"];
 };
 
+type MockPendingAgentDraftSeed = {
+  requestEventId?: string;
+  requestId: string;
+  action: "create" | "update";
+  channelId: string;
+  agentPubkey: string;
+  createdAt?: number;
+  displayName?: string;
+  systemPrompt?: string;
+  agentName?: string;
+  runtime?: string;
+  provider?: string;
+  model?: string;
+  respondTo?: string;
+};
+
 type MockRelayAgentSeed = {
   pubkey: string;
   name: string;
@@ -249,6 +265,8 @@ type E2eConfig = {
       mcp?: MockCommandAvailability;
     };
     managedAgents?: MockManagedAgentSeed[];
+    /** NIP-AD pending agent drafts served by `list_pending_agent_drafts`. */
+    pendingAgentDrafts?: MockPendingAgentDraftSeed[];
     /** Result returned by the mocked `add_agent_to_huddle` command. */
     addAgentToHuddleResult?: {
       ephemeral_added: boolean;
@@ -807,7 +825,8 @@ type RawManagedAgent = {
   auto_restart_on_config_change?: boolean;
   backend:
     | { type: "local" }
-    | { type: "provider"; id: string; config: Record<string, unknown> };
+    | { type: "provider"; id: string; config: Record<string, unknown> }
+    | { type: "external" };
   backend_agent_id: string | null;
   respond_to: "owner-only" | "allowlist" | "anyone";
   respond_to_allowlist: string[];
@@ -1195,6 +1214,21 @@ declare global {
         turnId: string | null;
         payload: unknown;
       }>;
+    }) => void;
+    __BUZZ_E2E_EMIT_MOCK_AGENT_DRAFT__?: (draft: {
+      requestEventId?: string;
+      requestId: string;
+      action: "create" | "update";
+      channelId: string;
+      agentPubkey: string;
+      createdAt?: number;
+      displayName?: string;
+      systemPrompt?: string;
+      agentName?: string;
+      runtime?: string;
+      provider?: string;
+      model?: string;
+      respondTo?: string;
     }) => void;
     __BUZZ_E2E_EMIT_MOCK_READ_STATE__?: (input: {
       clientId: string;
@@ -2155,6 +2189,24 @@ function resetMockRelayAgents(config?: E2eConfig) {
 
 function resetMockManagedAgents(config?: E2eConfig) {
   mockManagedAgents = [];
+  mockPendingAgentDrafts = (config?.mock?.pendingAgentDrafts ?? []).map(
+    (seed) => ({
+      requestEventId: seed.requestEventId ?? `mock-draft-${seed.requestId}`,
+      requestId: seed.requestId,
+      action: seed.action,
+      channelId: seed.channelId,
+      agentPubkey: seed.agentPubkey,
+      createdAt: seed.createdAt ?? Math.floor(Date.now() / 1000),
+      displayName: seed.displayName,
+      systemPrompt: seed.systemPrompt,
+      agentName: seed.agentName,
+      runtime: seed.runtime,
+      provider: seed.provider,
+      model: seed.model,
+      respondTo: seed.respondTo,
+    }),
+  );
+  mockResolvedDraftIds = new Set<string>();
   mockManagedAgentRuntimes = (config?.mock?.managedAgentRuntimes ?? []).map(
     (seed) => ({
       pubkey: seed.pubkey,
@@ -2873,6 +2925,27 @@ let mockClosedChannelLiveSubscription = false;
 const realSockets = new Map<number, WebSocket>();
 let mockManagedAgents: MockManagedAgent[] = [];
 let mockManagedAgentRuntimes: MockManagedAgentRuntimeRow[] = [];
+
+// NIP-AD mock draft state (kinds 44300/44301). Seeded/emitted by E2E specs and
+// served by the `list_pending_agent_drafts` / `resolve_agent_draft` /
+// `adopt_external_agent` mock command handlers.
+type MockPendingAgentDraft = {
+  requestEventId: string;
+  requestId: string;
+  action: "create" | "update";
+  channelId: string;
+  agentPubkey: string;
+  createdAt: number;
+  displayName?: string;
+  systemPrompt?: string;
+  agentName?: string;
+  runtime?: string;
+  provider?: string;
+  model?: string;
+  respondTo?: string;
+};
+let mockPendingAgentDrafts: MockPendingAgentDraft[] = [];
+let mockResolvedDraftIds = new Set<string>();
 
 // Mutable `save_subscriptions` table mirror — TEST-ONLY.
 //
@@ -7515,6 +7588,93 @@ async function handleListManagedAgents(
   return mockManagedAgents.map(cloneManagedAgent);
 }
 
+function handleListPendingAgentDrafts(): MockPendingAgentDraft[] {
+  return mockPendingAgentDrafts
+    .filter((draft) => !mockResolvedDraftIds.has(draft.requestId))
+    .map((draft) => ({ ...draft }));
+}
+
+function handleResolveAgentDraft(input: {
+  requestEventId: string;
+  requestId: string;
+  agentPubkey: string;
+  status: string;
+  agentPubkeySaved?: string;
+  reason?: string;
+}): { event_id: string; accepted: boolean; message: string } {
+  mockResolvedDraftIds.add(input.requestId);
+  return {
+    event_id: `mock-resolution-${input.requestId}`,
+    accepted: true,
+    message: "ok",
+  };
+}
+
+function handleAdoptExternalAgent(input: {
+  agentPubkey: string;
+  displayName: string;
+  systemPrompt?: string;
+  channelId?: string;
+  runtime?: string;
+  provider?: string;
+  model?: string;
+  respondTo?: string;
+}): {
+  pubkey: string;
+  name: string;
+  auth_tag: string;
+  backend: string;
+} {
+  const pubkey = input.agentPubkey.toLowerCase();
+  if (
+    !mockManagedAgents.some((agent) => agent.pubkey.toLowerCase() === pubkey)
+  ) {
+    mockManagedAgents.push({
+      pubkey,
+      name: input.displayName,
+      persona_id: null,
+      runtime: input.runtime ?? null,
+      relay_url: "ws://localhost:3000",
+      acp_command: "",
+      agent_command: "",
+      agent_args: [],
+      mcp_command: "",
+      turn_timeout_seconds: 320,
+      idle_timeout_seconds: null,
+      max_turn_duration_seconds: null,
+      parallelism: 1,
+      system_prompt: input.systemPrompt ?? null,
+      avatar_url: null,
+      model: input.model ?? null,
+      provider: input.provider ?? null,
+      status: "stopped",
+      pid: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      last_started_at: null,
+      last_stopped_at: null,
+      last_exit_code: null,
+      last_error: null,
+      last_error_code: null,
+      log_path: "",
+      start_on_app_launch: false,
+      auto_restart_on_config_change: false,
+      backend: { type: "external" },
+      backend_agent_id: null,
+      respond_to: "owner-only",
+      respond_to_allowlist: [],
+      private_key_nsec: "",
+      log_lines: [],
+    });
+  }
+  return {
+    pubkey,
+    name: input.displayName,
+    auth_tag: `["auth","${pubkey}","","mock-signature"]`,
+    backend: "external",
+  };
+}
+
 function isAgentMemoryListing(
   value: RawAgentMemoryListing | Record<string, RawAgentMemoryListing>,
 ): value is RawAgentMemoryListing {
@@ -9897,6 +10057,23 @@ export function maybeInstallE2eTauriMocks() {
   window.__BUZZ_E2E_SEED_OBSERVER_EVENTS__ = ({ agentPubkey, events }) => {
     injectObserverEventsForE2E(agentPubkey, events);
   };
+  window.__BUZZ_E2E_EMIT_MOCK_AGENT_DRAFT__ = (draft) => {
+    mockPendingAgentDrafts.push({
+      requestEventId: draft.requestEventId ?? `mock-draft-${draft.requestId}`,
+      requestId: draft.requestId,
+      action: draft.action,
+      channelId: draft.channelId,
+      agentPubkey: draft.agentPubkey,
+      createdAt: draft.createdAt ?? Math.floor(Date.now() / 1000),
+      displayName: draft.displayName,
+      systemPrompt: draft.systemPrompt,
+      agentName: draft.agentName,
+      runtime: draft.runtime,
+      provider: draft.provider,
+      model: draft.model,
+      respondTo: draft.respondTo,
+    });
+  };
   const meshNodeStatus = (
     state: "off" | "running",
     mode: "serve" | "client" | null,
@@ -11388,6 +11565,16 @@ export function maybeInstallE2eTauriMocks() {
       }
       case "list_managed_agents":
         return handleListManagedAgents(activeConfig);
+      case "list_pending_agent_drafts":
+        return handleListPendingAgentDrafts();
+      case "resolve_agent_draft":
+        return handleResolveAgentDraft(
+          payload as Parameters<typeof handleResolveAgentDraft>[0],
+        );
+      case "adopt_external_agent":
+        return handleAdoptExternalAgent(
+          payload as Parameters<typeof handleAdoptExternalAgent>[0],
+        );
       case "get_agent_memory":
         return handleGetAgentMemory(
           (payload as Parameters<typeof handleGetAgentMemory>[0]) ?? {},

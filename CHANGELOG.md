@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### NIP-AD: durable agent drafts
+
+- **feat(nips):** add NIP-AD spec for durable agent drafts (kinds 44300/44301), replacing the ephemeral kind-24200 `agent_management_request` path.
+- **feat(core):** add `KIND_AGENT_DRAFT_REQUEST` (44300) and `KIND_AGENT_DRAFT_RESOLUTION` (44301) to `P_GATED_KINDS`/`RESULT_GATED_KINDS`, plus an `agent_draft` payload module (create/update request + resolution, NIP-44 encrypt/decrypt, fail-closed version validation).
+- **feat(relay):** ingest envelope validation + `is_agent_owner` for both kinds, global-only storage, and FTS exclusion (migration 0027).
+- **feat(sdk):** `build_agent_draft_request` / `build_agent_draft_resolution` builders.
+- **feat(cli):** `buzz agents draft-create`/`draft-update` now publish durable kind 44300; new `buzz agents drafts list|status`.
+- **feat(desktop):** durable draft store + review dialog; `adopt_external_agent` (attest-first, no new keypair) and `import_external_agent_key`; `BackendKind::External` fails closed on spawn/restart/deploy.
+
 ## v0.5.3
 
 ### Desktop and shared changes

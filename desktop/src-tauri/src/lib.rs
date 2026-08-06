@@ -88,9 +88,9 @@ fn reveal_initial_window<R: tauri::Runtime>(window: &tauri::Window<R>) {
 
 #[cfg(target_os = "macos")]
 fn set_initial_window_backing<R: tauri::Runtime>(window: &tauri::Window<R>) {
-    // The window remains transparent at runtime for vibrancy. Use an opaque
-    // native backing only across the first visible frames so the previous app
-    // cannot show through before WebKit has submitted its first surface.
+    // The window stays transparent at runtime for vibrancy; use an opaque
+    // native backing only across the first frames so the prior app can't show
+    // through before WebKit submits its first surface.
     if let Err(error) = window.set_background_color(Some(tauri::window::Color(17, 21, 24, 255))) {
         eprintln!("buzz-desktop: failed to set initial window backing: {error}");
     }
@@ -115,10 +115,8 @@ async fn wait_for_stable_initial_window_geometry<R: tauri::Runtime>(window: &tau
     for _ in 0..MAX_POLLS {
         // Accept whatever geometry the window-state plugin restores — maximized
         // or a normal saved size. macOS applies the restore asynchronously, so
-        // we only need consecutive identical outer bounds to know it settled.
-        // Gating on `is_maximized()` here would leave `bounds` permanently
-        // `None` for restored non-maximized windows and stall the reveal until
-        // the poll timeout.
+        // consecutive identical outer bounds mean it settled; gating on
+        // `is_maximized()` would leave `bounds` None and stall the reveal.
         let bounds = match (window.outer_position(), window.outer_size()) {
             (Ok(position), Ok(size)) => Some((position.x, position.y, size.width, size.height)),
             _ => None,
@@ -142,11 +140,9 @@ async fn wait_for_stable_initial_window_geometry<R: tauri::Runtime>(window: &tau
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // mesh-llm's async chains (model download, node start/join) overflow
-    // tokio's default 2 MiB worker stacks — a stack-guard SIGABRT, not a
-    // panic. Upstream mesh-llm and mesh-console both run on 8 MiB worker
-    // stacks for this reason; give Tauri's command runtime the same headroom
-    // before anything else touches tauri::async_runtime.
+    // mesh-llm's async chains overflow tokio's default 2 MiB worker stacks
+    // (a stack-guard SIGABRT). Upstream runs 8 MiB workers; give Tauri's
+    // command runtime the same headroom before anything else touches it.
     #[cfg(feature = "mesh-llm")]
     match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -798,6 +794,10 @@ pub fn run() {
             resolve_oa_owner,
             list_relay_agents,
             list_managed_agents,
+            list_pending_agent_drafts,
+            resolve_agent_draft,
+            adopt_external_agent,
+            import_external_agent_key,
             list_managed_agent_runtimes,
             start_managed_agent_runtime,
             stop_managed_agent_runtime,

@@ -1,68 +1,39 @@
-//! Owner-reviewed agent draft requests published through Buzz observer frames.
+//! Owner-reviewed agent draft requests published as durable NIP-AD kind 44300.
 
-use buzz_core::observer::{encrypt_observer_payload, OBSERVER_FRAME_TELEMETRY};
+use buzz_core::agent_draft::{
+    encrypt_agent_draft_request, AgentDraftAction, AgentDraftCreateRequest, AgentDraftRequest,
+    AgentDraftRequestPayload, AgentDraftRespondTo, AgentDraftUpdateRequest, AGENT_DRAFT_VERSION,
+};
 use nostr::{Event, Keys, PublicKey};
-use serde::Serialize;
 
 use crate::error::CliError;
 
-const REQUEST_KIND: &str = "agent_management_request";
 const MAX_NAME_CHARS: usize = 120;
 const MAX_PROMPT_CHARS: usize = 20_000;
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct CreateAgentDraft {
     pub channel_id: String,
     pub display_name: String,
     pub system_prompt: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct UpdateAgentDraft {
     pub channel_id: String,
     pub agent_name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub respond_to: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ManagementRequest<T> {
-    #[serde(rename = "type")]
-    request_type: &'static str,
-    action: &'static str,
-    request_id: String,
-    request: T,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ObserverEvent<T> {
-    seq: u64,
-    timestamp: String,
-    kind: &'static str,
-    agent_index: Option<usize>,
-    channel_id: Option<String>,
-    session_id: Option<String>,
-    turn_id: Option<String>,
-    payload: ManagementRequest<T>,
 }
 
 #[derive(Debug)]
 pub struct BuiltDraftRequest {
     pub event: Event,
+    pub event_id: String,
     pub request_id: String,
     pub action: &'static str,
 }
@@ -80,48 +51,46 @@ fn required(value: String, label: &str, max: usize) -> Result<String, CliError> 
     Ok(value.to_owned())
 }
 
-fn optional(value: Option<String>, label: &str) -> Result<Option<String>, CliError> {
-    value.map(|value| required(value, label, 300)).transpose()
+fn optional(value: Option<String>, label: &str, max: usize) -> Result<Option<String>, CliError> {
+    value.map(|value| required(value, label, max)).transpose()
 }
 
-fn build<T: Serialize>(
+fn build(
     keys: &Keys,
     owner: &PublicKey,
     channel_id: String,
-    action: &'static str,
-    request: T,
+    action: AgentDraftAction,
+    request: AgentDraftRequest,
 ) -> Result<BuiltDraftRequest, CliError> {
     let request_id = uuid::Uuid::new_v4().to_string();
-    let payload = ObserverEvent {
-        seq: 0,
+    let payload = AgentDraftRequestPayload {
+        version: AGENT_DRAFT_VERSION,
+        request_id: request_id.clone(),
+        action,
         timestamp: chrono::Utc::now().to_rfc3339(),
-        kind: REQUEST_KIND,
-        agent_index: None,
-        channel_id: Some(channel_id),
-        session_id: None,
-        turn_id: None,
-        payload: ManagementRequest {
-            request_type: REQUEST_KIND,
-            action,
-            request_id: request_id.clone(),
-            request,
-        },
+        channel_id,
+        request,
     };
-    let encrypted = encrypt_observer_payload(keys, owner, &payload)
+    let encrypted = encrypt_agent_draft_request(keys, owner, &payload)
         .map_err(|error| CliError::Other(format!("could not encrypt draft request: {error}")))?;
-    let event = buzz_sdk::build_agent_observer_frame(
+    let event = buzz_sdk::build_agent_draft_request(
         &owner.to_hex(),
         &keys.public_key().to_hex(),
-        OBSERVER_FRAME_TELEMETRY,
         &encrypted,
     )
     .map_err(|error| CliError::Other(format!("could not build draft request: {error}")))?
     .sign_with_keys(keys)
     .map_err(|error| CliError::Other(format!("could not sign draft request: {error}")))?;
+    let event_id = event.id.to_hex();
+    let action_str = match action {
+        AgentDraftAction::Create => "create",
+        AgentDraftAction::Update => "update",
+    };
     Ok(BuiltDraftRequest {
         event,
+        event_id,
         request_id,
-        action,
+        action: action_str,
     })
 }
 
@@ -133,12 +102,11 @@ pub fn build_create(
     let channel_id = required(draft.channel_id, "channel", 128)?;
     uuid::Uuid::parse_str(&channel_id)
         .map_err(|_| CliError::Usage(format!("invalid channel UUID: {channel_id}")))?;
-    let request = CreateAgentDraft {
-        channel_id: channel_id.clone(),
+    let request = AgentDraftRequest::Create(AgentDraftCreateRequest {
         display_name: required(draft.display_name, "display name", MAX_NAME_CHARS)?,
         system_prompt: required(draft.system_prompt, "system prompt", MAX_PROMPT_CHARS)?,
-    };
-    build(keys, owner, channel_id, "create", request)
+    });
+    build(keys, owner, channel_id, AgentDraftAction::Create, request)
 }
 
 pub fn build_update(
@@ -149,46 +117,54 @@ pub fn build_update(
     let channel_id = required(draft.channel_id, "channel", 128)?;
     uuid::Uuid::parse_str(&channel_id)
         .map_err(|_| CliError::Usage(format!("invalid channel UUID: {channel_id}")))?;
-    let respond_to = optional(draft.respond_to, "respond-to")?;
-    if respond_to
-        .as_deref()
-        .is_some_and(|value| value != "owner-only" && value != "anyone")
-    {
-        return Err(CliError::Usage(
-            "respond-to must be owner-only or anyone".into(),
-        ));
-    }
-    let request = UpdateAgentDraft {
-        channel_id: channel_id.clone(),
+    let respond_to = match draft.respond_to.as_deref() {
+        None => None,
+        Some("owner-only") => Some(AgentDraftRespondTo::OwnerOnly),
+        Some("anyone") => Some(AgentDraftRespondTo::Anyone),
+        Some(other) => {
+            return Err(CliError::Usage(format!(
+                "respond-to must be owner-only or anyone (got {other})"
+            )))
+        }
+    };
+    let request = AgentDraftRequest::Update(AgentDraftUpdateRequest {
         agent_name: required(draft.agent_name, "agent name", MAX_NAME_CHARS)?,
-        display_name: optional(draft.display_name, "display name")?,
+        display_name: optional(draft.display_name, "display name", MAX_NAME_CHARS)?,
         system_prompt: draft
             .system_prompt
             .map(|value| required(value, "system prompt", MAX_PROMPT_CHARS))
             .transpose()?,
-        runtime: optional(draft.runtime, "runtime")?,
-        provider: optional(draft.provider, "provider")?,
-        model: optional(draft.model, "model")?,
+        runtime: optional(draft.runtime, "runtime", 300)?,
+        provider: optional(draft.provider, "provider", 300)?,
+        model: optional(draft.model, "model", 300)?,
         respond_to,
-    };
-    if request.display_name.is_none()
-        && request.system_prompt.is_none()
-        && request.runtime.is_none()
-        && request.provider.is_none()
-        && request.model.is_none()
-        && request.respond_to.is_none()
-    {
+    });
+    if request_has_no_change(&request) {
         return Err(CliError::Usage(
             "include at least one field to update".into(),
         ));
     }
-    build(keys, owner, channel_id, "update", request)
+    build(keys, owner, channel_id, AgentDraftAction::Update, request)
+}
+
+fn request_has_no_change(request: &AgentDraftRequest) -> bool {
+    match request {
+        AgentDraftRequest::Update(u) => {
+            u.display_name.is_none()
+                && u.system_prompt.is_none()
+                && u.runtime.is_none()
+                && u.provider.is_none()
+                && u.model.is_none()
+                && u.respond_to.is_none()
+        }
+        AgentDraftRequest::Create(_) => false,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buzz_core::observer::{decrypt_observer_payload, OBSERVER_AGENT_TAG, OBSERVER_FRAME_TAG};
+    use buzz_core::agent_draft::decrypt_agent_draft_request;
 
     const CHANNEL: &str = "7c07e659-3610-42f4-9a5e-1e9973c09da9";
 
@@ -207,37 +183,44 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(built.event.kind.as_u16(), 24_200);
+        assert_eq!(built.event.kind.as_u16(), 44_300);
         let tags: Vec<Vec<String>> = built
             .event
             .tags
             .iter()
             .map(|tag| tag.as_slice().to_vec())
             .collect();
+        // Exactly two `p` tags (owner + agent) and one `agent` tag, no `h`.
+        let p_tags: Vec<&Vec<String>> = tags
+            .iter()
+            .filter(|tag| tag.first().map(String::as_str) == Some("p"))
+            .collect();
+        assert_eq!(p_tags.len(), 2, "must have exactly two p tags");
         assert!(tags
             .iter()
             .any(|tag| tag == &["p", &owner.public_key().to_hex()]));
         assert!(tags
             .iter()
-            .any(|tag| tag == &[OBSERVER_AGENT_TAG, &agent.public_key().to_hex()]));
+            .any(|tag| tag == &["p", &agent.public_key().to_hex()]));
         assert!(tags
             .iter()
-            .any(|tag| tag == &[OBSERVER_FRAME_TAG, OBSERVER_FRAME_TELEMETRY]));
+            .any(|tag| tag == &["agent", &agent.public_key().to_hex()]));
         assert!(!tags
             .iter()
             .any(|tag| tag.first().map(String::as_str) == Some("h")));
 
-        let payload: serde_json::Value = decrypt_observer_payload(&owner, &built.event).unwrap();
-        assert_eq!(payload["kind"], REQUEST_KIND);
-        assert_eq!(payload["channelId"], CHANNEL);
-        assert_eq!(payload["payload"]["type"], REQUEST_KIND);
-        assert_eq!(payload["payload"]["action"], "create");
-        assert_eq!(
-            payload["payload"]["request"]["displayName"],
-            "Research helper"
-        );
-        assert!(payload["payload"]["request"].get("runtime").is_none());
-        assert!(payload["payload"]["request"].get("respondTo").is_none());
+        let payload = decrypt_agent_draft_request(&owner, &built.event).unwrap();
+        assert_eq!(payload.version, 1);
+        assert_eq!(payload.request_id, built.request_id);
+        assert_eq!(payload.action, AgentDraftAction::Create);
+        assert_eq!(payload.channel_id, CHANNEL);
+        match payload.request {
+            AgentDraftRequest::Create(create) => {
+                assert_eq!(create.display_name, "Research helper");
+                assert_eq!(create.system_prompt, "Find sources.");
+            }
+            AgentDraftRequest::Update(_) => panic!("expected create request"),
+        }
     }
 
     #[test]

@@ -26,16 +26,17 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
                     system_prompt: read_or_stdin(&system_prompt)?,
                 },
             )?;
-            let response = client.publish_ephemeral_event(built.event).await?;
+            let response = client.submit_event(built.event).await?;
             let mut output: serde_json::Value = serde_json::from_str(&response)
                 .map_err(|e| CliError::Other(format!("invalid relay response: {e}")))?;
             if let Some(obj) = output.as_object_mut() {
+                obj.insert("event_id".into(), built.event_id.into());
                 obj.insert("request_id".into(), built.request_id.into());
                 obj.insert("action".into(), built.action.into());
                 obj.insert("saved".into(), false.into());
                 obj.insert(
                     "message".into(),
-                    "Draft sent to Buzz Desktop for owner review. Nothing changes until the owner saves it."
+                    "Draft published for owner review in Buzz Desktop. Nothing changes until the owner saves it."
                         .into(),
                 );
             }
@@ -68,20 +69,26 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
                     respond_to: respond_to.map(RespondToArg::to_wire),
                 },
             )?;
-            let response = client.publish_ephemeral_event(built.event).await?;
+            let response = client.submit_event(built.event).await?;
             let mut output: serde_json::Value = serde_json::from_str(&response)
                 .map_err(|e| CliError::Other(format!("invalid relay response: {e}")))?;
             if let Some(obj) = output.as_object_mut() {
+                obj.insert("event_id".into(), built.event_id.into());
                 obj.insert("request_id".into(), built.request_id.into());
                 obj.insert("action".into(), built.action.into());
                 obj.insert("saved".into(), false.into());
                 obj.insert(
                     "message".into(),
-                    "Draft sent to Buzz Desktop for owner review. Nothing changes until the owner saves it."
+                    "Draft published for owner review in Buzz Desktop. Nothing changes until the owner saves it."
                         .into(),
                 );
             }
             println!("{output}");
+            Ok(())
+        }
+
+        AgentsCmd::Drafts(cmd) => {
+            crate::commands::agent_drafts::dispatch(cmd, client).await?;
             Ok(())
         }
 

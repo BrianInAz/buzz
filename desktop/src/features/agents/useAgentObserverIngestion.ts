@@ -73,7 +73,7 @@ export function combineObserverIngestionAgents(
  * Do not gate this hook on identity/startup readiness — that would drop
  * managed-agent observer coverage during startup.
  */
-export function useAgentObserverIngestion() {
+export function useAgentObserverIngestion(observerReconciled: boolean) {
   const identityQuery = useIdentityQuery();
   const currentPubkey = identityQuery.data?.pubkey;
 
@@ -111,6 +111,6 @@ export function useAgentObserverIngestion() {
     );
   }, [currentPubkey, managedAgents, profiles, relayAgentPubkeys]);
 
-  useManagedAgentObserverBridge(ingestionAgents);
+  useManagedAgentObserverBridge(ingestionAgents, observerReconciled);
   useActiveAgentTurnsBridge(ingestionAgents);
 }

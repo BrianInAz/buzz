@@ -5,14 +5,15 @@
 
 use buzz_core::{
     kind::{
-        KIND_AGENT_OBSERVER_FRAME, KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_DELETION,
-        KIND_DM_ADD_MEMBER, KIND_DM_OPEN, KIND_EMOJI_SET, KIND_GIT_ISSUE, KIND_GIT_PATCH,
-        KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST, KIND_GIT_REPO_ANNOUNCEMENT,
-        KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT, KIND_GIT_STATUS_MERGED,
-        KIND_GIT_STATUS_OPEN, KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST,
-        KIND_MODERATION_BAN, KIND_MODERATION_RESOLVE_REPORT, KIND_MODERATION_TIMEOUT,
-        KIND_MODERATION_UNBAN, KIND_MODERATION_UNTIMEOUT, KIND_PRESENCE_UPDATE, KIND_PROJECT,
-        KIND_USER_STATUS, KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER,
+        KIND_AGENT_DRAFT_REQUEST, KIND_AGENT_DRAFT_RESOLUTION, KIND_AGENT_OBSERVER_FRAME,
+        KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_DELETION, KIND_DM_ADD_MEMBER, KIND_DM_OPEN,
+        KIND_EMOJI_SET, KIND_GIT_ISSUE, KIND_GIT_PATCH, KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST,
+        KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT,
+        KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN, KIND_IA_ARCHIVE_REQUEST,
+        KIND_IA_UNARCHIVE_REQUEST, KIND_MODERATION_BAN, KIND_MODERATION_RESOLVE_REPORT,
+        KIND_MODERATION_TIMEOUT, KIND_MODERATION_UNBAN, KIND_MODERATION_UNTIMEOUT,
+        KIND_PRESENCE_UPDATE, KIND_PROJECT, KIND_USER_STATUS, KIND_WORKFLOW_DEF,
+        KIND_WORKFLOW_TRIGGER,
     },
     observer::{
         content_looks_like_nip44, OBSERVER_AGENT_TAG, OBSERVER_FRAME_CONTROL, OBSERVER_FRAME_TAG,
@@ -272,6 +273,83 @@ pub fn build_agent_observer_frame(
         encrypted_content,
     )
     .tags(tags))
+}
+
+/// Build a NIP-AD agent draft request (kind 44300, agent → owner).
+///
+/// `encrypted_content` must be NIP-44 v2 ciphertext (agent seckey → owner
+/// pubkey). The envelope carries two `p` tags (owner + agent, `owner != agent`)
+/// and one `agent` tag (the agent pubkey), with no `h` tag. The builder enables
+/// self-tagging so the agent's own pubkey survives as a `p` tag (nostr's
+/// `EventBuilder` discards self-`p`-tags by default). See `docs/nips/NIP-AD.md`.
+pub fn build_agent_draft_request(
+    owner_pubkey: &str,
+    agent_pubkey: &str,
+    encrypted_content: &str,
+) -> Result<EventBuilder, SdkError> {
+    if !content_looks_like_nip44(encrypted_content) {
+        return Err(SdkError::InvalidInput(
+            "agent draft request content must be NIP-44 v2 ciphertext".into(),
+        ));
+    }
+    let owner_pubkey = check_pubkey_hex(owner_pubkey, "owner_pubkey")?;
+    let agent_pubkey = check_pubkey_hex(agent_pubkey, "agent_pubkey")?;
+    if owner_pubkey == agent_pubkey {
+        return Err(SdkError::InvalidInput(
+            "agent draft request owner and agent must differ".into(),
+        ));
+    }
+    let tags = vec![
+        tag(&["p", &owner_pubkey])?,
+        tag(&["p", &agent_pubkey])?,
+        tag(&[OBSERVER_AGENT_TAG, &agent_pubkey])?,
+    ];
+    Ok(EventBuilder::new(
+        Kind::Custom(KIND_AGENT_DRAFT_REQUEST as u16),
+        encrypted_content,
+    )
+    .tags(tags)
+    .allow_self_tagging())
+}
+
+/// Build a NIP-AD agent draft resolution (kind 44301, owner → agent).
+///
+/// `encrypted_content` must be NIP-44 v2 ciphertext (owner seckey → agent
+/// pubkey). The envelope carries two `p` tags (owner + agent, `owner != agent`),
+/// one `agent` tag (the agent pubkey), and one `e` tag (the request event id),
+/// with no `h` tag. The builder enables self-tagging so the owner's own pubkey
+/// survives as a `p` tag. See `docs/nips/NIP-AD.md`.
+pub fn build_agent_draft_resolution(
+    owner_pubkey: &str,
+    agent_pubkey: &str,
+    request_event_id: &str,
+    encrypted_content: &str,
+) -> Result<EventBuilder, SdkError> {
+    if !content_looks_like_nip44(encrypted_content) {
+        return Err(SdkError::InvalidInput(
+            "agent draft resolution content must be NIP-44 v2 ciphertext".into(),
+        ));
+    }
+    let owner_pubkey = check_pubkey_hex(owner_pubkey, "owner_pubkey")?;
+    let agent_pubkey = check_pubkey_hex(agent_pubkey, "agent_pubkey")?;
+    if owner_pubkey == agent_pubkey {
+        return Err(SdkError::InvalidInput(
+            "agent draft resolution owner and agent must differ".into(),
+        ));
+    }
+    let request_event_id = check_hex_exact(request_event_id, 64, "request_event_id")?;
+    let tags = vec![
+        tag(&["p", &owner_pubkey])?,
+        tag(&["p", &agent_pubkey])?,
+        tag(&[OBSERVER_AGENT_TAG, &agent_pubkey])?,
+        tag(&["e", &request_event_id])?,
+    ];
+    Ok(EventBuilder::new(
+        Kind::Custom(KIND_AGENT_DRAFT_RESOLUTION as u16),
+        encrypted_content,
+    )
+    .tags(tags)
+    .allow_self_tagging())
 }
 
 /// Build a forum post thread root (kind 45001).
@@ -2289,6 +2367,132 @@ mod tests {
             "not encrypted",
         )
         .unwrap_err();
+        assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    // ── NIP-AD draft builders ───────────────────────────────────────────────
+
+    fn fake_nip44() -> String {
+        // base64(b"\x02" + b"\x00" * 98) — 132 chars, decoded length 99.
+        let mut s = String::from("Ag");
+        s.push_str(&"A".repeat(130));
+        s
+    }
+
+    #[test]
+    fn agent_draft_request_happy_path() {
+        let owner = keys();
+        let agent = keys();
+        let encrypted = fake_nip44();
+        let ev = sign(
+            build_agent_draft_request(
+                &owner.public_key().to_hex(),
+                &agent.public_key().to_hex(),
+                &encrypted,
+            )
+            .unwrap(),
+        );
+
+        assert_eq!(ev.kind.as_u16(), KIND_AGENT_DRAFT_REQUEST as u16);
+        assert_eq!(ev.content, encrypted);
+        // Exactly two `p` tags (owner + agent) and one `agent` tag, no `h`.
+        let p_tags = tag_values(&ev, "p");
+        assert_eq!(p_tags.len(), 2, "must have exactly two p tags");
+        assert!(p_tags.contains(&owner.public_key().to_hex()));
+        assert!(p_tags.contains(&agent.public_key().to_hex()));
+        assert_eq!(
+            tag_values(&ev, OBSERVER_AGENT_TAG),
+            vec![agent.public_key().to_hex()]
+        );
+        assert!(!has_tag(&ev, "h", ""));
+        assert!(!ev
+            .tags
+            .iter()
+            .any(|t| t.as_slice().first().map(|v| v.as_str()) == Some("h")));
+    }
+
+    #[test]
+    fn agent_draft_resolution_happy_path() {
+        let owner = keys();
+        let agent = keys();
+        let encrypted = fake_nip44();
+        let request_event_id = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2";
+        let ev = sign(
+            build_agent_draft_resolution(
+                &owner.public_key().to_hex(),
+                &agent.public_key().to_hex(),
+                request_event_id,
+                &encrypted,
+            )
+            .unwrap(),
+        );
+
+        assert_eq!(ev.kind.as_u16(), KIND_AGENT_DRAFT_RESOLUTION as u16);
+        assert_eq!(ev.content, encrypted);
+        let p_tags = tag_values(&ev, "p");
+        assert_eq!(p_tags.len(), 2, "must have exactly two p tags");
+        assert!(p_tags.contains(&owner.public_key().to_hex()));
+        assert!(p_tags.contains(&agent.public_key().to_hex()));
+        assert_eq!(
+            tag_values(&ev, OBSERVER_AGENT_TAG),
+            vec![agent.public_key().to_hex()]
+        );
+        assert_eq!(tag_values(&ev, "e"), vec![request_event_id.to_string()]);
+        assert!(!ev
+            .tags
+            .iter()
+            .any(|t| t.as_slice().first().map(|v| v.as_str()) == Some("h")));
+    }
+
+    #[test]
+    fn agent_draft_request_rejects_plaintext_content() {
+        let err = build_agent_draft_request(&"a".repeat(64), &"b".repeat(64), "not encrypted")
+            .unwrap_err();
+        assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn agent_draft_resolution_rejects_plaintext_content() {
+        let err = build_agent_draft_resolution(
+            &"a".repeat(64),
+            &"b".repeat(64),
+            &"c".repeat(64),
+            "not encrypted",
+        )
+        .unwrap_err();
+        assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn agent_draft_request_rejects_owner_equals_agent() {
+        let pk = "a".repeat(64);
+        let err = build_agent_draft_request(&pk, &pk, &fake_nip44()).unwrap_err();
+        assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn agent_draft_resolution_rejects_owner_equals_agent() {
+        let pk = "a".repeat(64);
+        let err =
+            build_agent_draft_resolution(&pk, &pk, &"c".repeat(64), &fake_nip44()).unwrap_err();
+        assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn agent_draft_resolution_rejects_bad_event_id() {
+        let err = build_agent_draft_resolution(
+            &"a".repeat(64),
+            &"b".repeat(64),
+            "not-hex",
+            &fake_nip44(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn agent_draft_request_rejects_bad_pubkey() {
+        let err = build_agent_draft_request("short", &"b".repeat(64), &fake_nip44()).unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
     }
 

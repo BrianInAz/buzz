@@ -10,6 +10,8 @@ pub enum BackendKind {
         id: String,
         config: serde_json::Value,
     },
+    /// Externally-managed agent adopted by the owner (no local keypair); never spawned by the desktop.
+    External,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -441,10 +443,7 @@ pub struct ManagedAgentRecord {
 }
 
 /// Typed relay-mesh configuration carried on a [`ManagedAgentRecord`].
-///
-/// Feature-independent on purpose: the field is always present in the record
-/// schema so saved agents round-trip identically whether or not the `mesh-llm`
-/// feature is compiled in.
+/// Feature-independent: always present so saved agents round-trip identically.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RelayMeshConfig {
     /// The served model id this agent routes to (e.g. "Qwen3").

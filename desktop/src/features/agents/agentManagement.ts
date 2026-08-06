@@ -3,26 +3,27 @@ import type {
   CreatePersonaInput,
   RespondToMode,
 } from "@/shared/api/types";
+import type { PendingAgentDraft } from "@/shared/api/tauriAgentDrafts";
 
-export const AGENT_MANAGEMENT_REQUEST = "agent_management_request" as const;
+export const AGENT_DRAFT_VERSION = 1 as const;
 
 export type AgentManagementCreateRequest = {
-  type: typeof AGENT_MANAGEMENT_REQUEST;
+  version: typeof AGENT_DRAFT_VERSION;
   action: "create";
   requestId: string;
+  channelId: string;
   request: {
-    channelId: string;
     displayName: string;
     systemPrompt: string;
   };
 };
 
 export type AgentManagementUpdateRequest = {
-  type: typeof AGENT_MANAGEMENT_REQUEST;
+  version: typeof AGENT_DRAFT_VERSION;
   action: "update";
   requestId: string;
+  channelId: string;
   request: {
-    channelId: string;
     agentName: string;
     displayName?: string;
     systemPrompt?: string;
@@ -52,16 +53,22 @@ function hasOnlyKeys(
   return Object.keys(value).every((key) => allowed.includes(key));
 }
 
-/** Parses only the deliberately narrow no-secret agent-management request contract. */
+/**
+ * Parses the deliberately narrow no-secret NIP-AD agent-draft contract
+ * (`AgentDraftRequestPayload`). `version` MUST be 1 (fail closed on any other
+ * value); unknown fields are ignored; the strict `hasOnlyKeys` allowlists are
+ * load-bearing and must not be loosened.
+ */
 export function parseAgentManagementRequest(
   value: unknown,
 ): AgentManagementRequest | null {
   if (typeof value !== "object" || value === null) return null;
   const payload = value as Record<string, unknown>;
   if (
-    payload.type !== AGENT_MANAGEMENT_REQUEST ||
+    payload.version !== AGENT_DRAFT_VERSION ||
     !isText(payload.requestId) ||
     (payload.action !== "create" && payload.action !== "update") ||
+    !isText(payload.channelId) ||
     typeof payload.request !== "object" ||
     payload.request === null
   ) {
@@ -70,22 +77,18 @@ export function parseAgentManagementRequest(
   const request = payload.request as Record<string, unknown>;
 
   if (payload.action === "create") {
-    if (!hasOnlyKeys(request, ["channelId", "displayName", "systemPrompt"])) {
+    if (!hasOnlyKeys(request, ["displayName", "systemPrompt"])) {
       return null;
     }
-    if (
-      !isText(request.channelId) ||
-      !isText(request.displayName) ||
-      !isText(request.systemPrompt)
-    ) {
+    if (!isText(request.displayName) || !isText(request.systemPrompt)) {
       return null;
     }
     return {
-      type: AGENT_MANAGEMENT_REQUEST,
+      version: AGENT_DRAFT_VERSION,
       action: "create",
       requestId: payload.requestId,
+      channelId: payload.channelId,
       request: {
-        channelId: request.channelId,
         displayName: request.displayName,
         systemPrompt: request.systemPrompt,
       },
@@ -95,7 +98,6 @@ export function parseAgentManagementRequest(
   if (
     !isRespondTo(request.respondTo) ||
     !hasOnlyKeys(request, [
-      "channelId",
       "agentName",
       "displayName",
       "systemPrompt",
@@ -104,7 +106,6 @@ export function parseAgentManagementRequest(
       "model",
       "respondTo",
     ]) ||
-    !isText(request.channelId) ||
     !isText(request.agentName)
   ) {
     return null;
@@ -123,11 +124,11 @@ export function parseAgentManagementRequest(
   };
   if (Object.keys(changes).length === 0) return null;
   return {
-    type: AGENT_MANAGEMENT_REQUEST,
+    version: AGENT_DRAFT_VERSION,
     action: "update",
     requestId: payload.requestId,
+    channelId: payload.channelId,
     request: {
-      channelId: request.channelId,
       agentName: request.agentName,
       ...changes,
     },
@@ -138,6 +139,51 @@ export function requestTargetsEditablePersona(
   persona: AgentPersona | undefined,
 ): persona is AgentPersona {
   return Boolean(persona && !persona.sourceTeam);
+}
+
+/**
+ * Convert a decrypted, flattened `PendingAgentDraft` (from the durable NIP-AD
+ * store) into the nested `AgentManagementRequest` shape the review dialog
+ * consumes. Returns `null` when the draft is structurally incomplete.
+ */
+export function pendingDraftToRequest(
+  draft: PendingAgentDraft,
+): AgentManagementRequest | null {
+  if (draft.action === "create") {
+    if (!draft.displayName || !draft.systemPrompt) {
+      return null;
+    }
+    return {
+      version: AGENT_DRAFT_VERSION,
+      action: "create",
+      requestId: draft.requestId,
+      channelId: draft.channelId,
+      request: {
+        displayName: draft.displayName,
+        systemPrompt: draft.systemPrompt,
+      },
+    };
+  }
+  if (!draft.agentName) {
+    return null;
+  }
+  const changes: Record<string, string> = {};
+  if (draft.displayName) changes.displayName = draft.displayName;
+  if (draft.systemPrompt) changes.systemPrompt = draft.systemPrompt;
+  if (draft.runtime) changes.runtime = draft.runtime;
+  if (draft.provider) changes.provider = draft.provider;
+  if (draft.model) changes.model = draft.model;
+  if (draft.respondTo) changes.respondTo = draft.respondTo;
+  if (Object.keys(changes).length === 0) {
+    return null;
+  }
+  return {
+    version: AGENT_DRAFT_VERSION,
+    action: "update",
+    requestId: draft.requestId,
+    channelId: draft.channelId,
+    request: { agentName: draft.agentName, ...changes },
+  };
 }
 
 export function createInputFromRequest(

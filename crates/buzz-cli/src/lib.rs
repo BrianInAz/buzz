@@ -295,6 +295,9 @@ pub enum AgentsCmd {
         #[arg(long, value_enum)]
         respond_to: Option<RespondToArg>,
     },
+    /// List and inspect durable agent drafts (NIP-AD kinds 44300/44301)
+    #[command(subcommand)]
+    Drafts(DraftsCmd),
     /// Submit a NIP-IA archive request for an identity (kind 9035)
     #[command(
         after_help = "The relay chooses the consent path (self / admin / owner) from the \
@@ -345,6 +348,32 @@ Examples:\n  \
 buzz agents archived"
     )]
     Archived,
+}
+
+/// Subcommands for `buzz agents drafts` — durable NIP-AD draft inspection.
+#[derive(Subcommand)]
+pub enum DraftsCmd {
+    /// List agent drafts (pending by default)
+    List {
+        /// Filter to a single channel UUID
+        #[arg(long)]
+        channel: Option<String>,
+        /// Show only pending drafts (the default)
+        #[arg(long)]
+        pending: bool,
+        /// Show all drafts including resolved ones
+        #[arg(long)]
+        all: bool,
+        /// Max number of drafts to return
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+    },
+    /// Show the status of a single draft by request id
+    Status {
+        /// The request id (uuid) of the draft
+        #[arg(long)]
+        request_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2149,6 +2178,7 @@ mod tests {
                 "archived",
                 "draft-create",
                 "draft-update",
+                "drafts",
                 "unarchive"
             ]
         );
@@ -2287,7 +2317,7 @@ mod tests {
     #[test]
     fn subcommand_counts_are_stable() {
         let expected: Vec<(&str, usize)> = vec![
-            ("agents", 5),
+            ("agents", 6),
             ("canvas", 2),
             ("channels", 16),
             ("dms", 4),

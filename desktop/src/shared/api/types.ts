@@ -302,7 +302,8 @@ export type ManagedAgentRuntimeStatus = {
 
 export type ManagedAgentBackend =
   | { type: "local" }
-  | { type: "provider"; id: string; config: Record<string, unknown> };
+  | { type: "provider"; id: string; config: Record<string, unknown> }
+  | { type: "external" };
 
 export type ManagedAgent = {
   pubkey: string;
@@ -310,8 +311,7 @@ export type ManagedAgent = {
   personaId: string | null;
   /**
    * The record's harness/runtime id (e.g. "goose", "my-custom-harness").
-   * `null` means the agent inherits its harness from the linked persona.
-   * Used to count agents referencing a harness definition (delete confirm).
+   * `null` = inherit from the linked persona; used to count harness refs.
    */
   runtime: string | null;
   teamId?: string | null;

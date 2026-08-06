@@ -147,6 +147,18 @@ with a TypeScript lookup table or an id comparison in a component.
    themselves. Never synthesize a run location a surface doesn't have. Don't
    expose `respond-to`, `allowlist`, Nostr, or harness jargon in primary UI
    copy.
+12. **`BackendKind::External` agents have no launch controls by construction.**
+    An adopted external agent is an existing identity the owner attests to via
+    a minted NIP-OA `BUZZ_AUTH_TAG` — adoption never mints a keypair, and the
+    desktop refuses to spawn/restart/deploy it (fail closed on every
+    spawn/restart/deploy path). Its launch controls are absent because the
+    agent runs itself; the only handoff is the `BUZZ_AUTH_TAG` shown after
+    adoption. Do not add a "start" affordance for an `External` agent, and do
+    not route a create draft through the mint-a-new-keypair
+    `createManagedAgent` path — the review dialog's primary action for a
+    create draft is "Adopt this identity" (`adopt_external_agent`), with
+    "Import key to run from this Desktop" (`import_external_agent_key`) as a
+    separately-confirmed secondary.
 
 ## The tests that enforce this
 

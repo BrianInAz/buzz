@@ -12,9 +12,10 @@ pub fn filters_match(filters: &[Filter], event: &StoredEvent) -> bool {
 }
 
 /// Result-level read authorization for relay-signed events whose content is
-/// private to a single viewer. Currently gates `KIND_DM_VISIBILITY` and
-/// `KIND_AGENT_TURN_METRIC`: the reader MUST equal the event's `#p` tag
-/// (owner). Returns `true` for every other kind.
+/// private to a single viewer. Gates every kind in [`crate::kind::RESULT_GATED_KINDS`]
+/// (currently `KIND_DM_VISIBILITY`, `KIND_AGENT_TURN_METRIC`, and the NIP-AD
+/// draft kinds): the reader MUST equal one of the event's `#p` tag values.
+/// Returns `true` for every other kind.
 ///
 /// This guards every delivery surface — WS historical pull (`req.rs`), HTTP
 /// bridge (`bridge.rs`), and live fan-out (`event.rs`) — so a query that
@@ -22,7 +23,9 @@ pub fn filters_match(filters: &[Filter], event: &StoredEvent) -> bool {
 /// a known event id) still cannot read another user's private event.
 pub fn reader_authorized_for_event(event: &nostr::Event, reader_pubkey_hex: &str) -> bool {
     let kind = crate::kind::event_kind_u32(event);
-    if kind != crate::kind::KIND_DM_VISIBILITY && kind != crate::kind::KIND_AGENT_TURN_METRIC {
+    // The constant is the single source of truth: a kind added to
+    // RESULT_GATED_KINDS inherits this gate without a new branch here.
+    if !crate::kind::RESULT_GATED_KINDS.contains(&kind) {
         return true;
     }
     let p = nostr::SingleLetterTag::lowercase(nostr::Alphabet::P);
@@ -295,6 +298,77 @@ mod tests {
         assert!(
             !reader_authorized_for_event(&metric, &agent_keys.public_key().to_hex()),
             "the authoring agent must NOT be authorized to read its own metric event (owner-only)"
+        );
+    }
+
+    #[test]
+    fn reader_authorized_for_event_gates_agent_drafts_by_p() {
+        let agent_keys = Keys::generate();
+        let owner = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let attacker = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+        // 44300 draft request: pubkey=agent, two p tags (owner + agent), agent tag.
+        let request = EventBuilder::new(
+            Kind::Custom(crate::kind::KIND_AGENT_DRAFT_REQUEST as u16),
+            "encrypted-payload",
+        )
+        .tags([
+            Tag::parse(["p", owner]).unwrap(),
+            Tag::parse(["p", &agent_keys.public_key().to_hex()]).unwrap(),
+            Tag::parse(["agent", &agent_keys.public_key().to_hex()]).unwrap(),
+        ])
+        // The agent's own pubkey is a `p` tag; nostr's EventBuilder discards
+        // self-`p`-tags unless self-tagging is allowed.
+        .allow_self_tagging()
+        .sign_with_keys(&agent_keys)
+        .expect("sign");
+
+        assert!(
+            reader_authorized_for_event(&request, owner),
+            "owner must be authorized to read a draft request addressed to them"
+        );
+        assert!(
+            reader_authorized_for_event(&request, &agent_keys.public_key().to_hex()),
+            "the requesting agent must be authorized to read back its own draft"
+        );
+        assert!(
+            !reader_authorized_for_event(&request, attacker),
+            "a third party must NOT be authorized to read a draft request"
+        );
+
+        // 44301 draft resolution: pubkey=owner, two p tags (owner + agent), agent tag.
+        let owner_keys = Keys::generate();
+        let resolution = EventBuilder::new(
+            Kind::Custom(crate::kind::KIND_AGENT_DRAFT_RESOLUTION as u16),
+            "encrypted-payload",
+        )
+        .tags([
+            Tag::parse(["p", &owner_keys.public_key().to_hex()]).unwrap(),
+            Tag::parse(["p", &agent_keys.public_key().to_hex()]).unwrap(),
+            Tag::parse(["agent", &agent_keys.public_key().to_hex()]).unwrap(),
+            Tag::parse([
+                "e",
+                "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+            ])
+            .unwrap(),
+        ])
+        // The owner's own pubkey is a `p` tag; nostr's EventBuilder discards
+        // self-`p`-tags unless self-tagging is allowed.
+        .allow_self_tagging()
+        .sign_with_keys(&owner_keys)
+        .expect("sign");
+
+        assert!(
+            reader_authorized_for_event(&resolution, &owner_keys.public_key().to_hex()),
+            "owner must be authorized to read a resolution they authored"
+        );
+        assert!(
+            reader_authorized_for_event(&resolution, &agent_keys.public_key().to_hex()),
+            "the agent must be authorized to read a resolution addressed to it"
+        );
+        assert!(
+            !reader_authorized_for_event(&resolution, attacker),
+            "a third party must NOT be authorized to read a draft resolution"
         );
     }
 }
