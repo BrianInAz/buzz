@@ -67,7 +67,10 @@ COPY --from=planner /build/recipe.json recipe.json
 # scoping to -p buzz-relay misses transitive deps and re-builds them later.
 RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
-RUN cargo build --release --locked -p buzz-relay --bin buzz-relay \
+# cargo chef cook resolves workspace crates to recipe versions, which can
+# diverge from the committed lock; --locked would then fail. Build without it
+# so the lock is refreshed to the chef resolution.
+RUN cargo build --release -p buzz-relay --bin buzz-relay \
                                    -p buzz-admin --bin buzz-admin \
                                    -p buzz-pair-relay --bin buzz-pair-relay
 
