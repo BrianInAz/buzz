@@ -257,6 +257,10 @@ fn start_pair(
         .map_err(|e| e.to_string())?;
     let mut records = load_managed_agents(&app)?;
     let record = find_managed_agent_mut(&mut records, &pubkey)?;
+    // Fail closed: an adopted external agent has no local keypair to spawn.
+    if record.backend == BackendKind::External {
+        return Err("external agents cannot be spawned by the desktop".into());
+    }
     if record.backend != BackendKind::Local {
         return Err("managed runtime pairs require a local agent".into());
     }

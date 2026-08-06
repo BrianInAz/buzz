@@ -1182,7 +1182,6 @@ pub async fn start_managed_agent(
             "agent {pubkey} has unsupported backend kind: {backend:?}"
         )),
     };
-
     // ── Profile reconciliation (fire-and-forget) ────────────────────────────
     // On successful start, spawn a background task to ensure the agent's kind:0
     // profile is published on the relay. This self-heals cases where the initial

@@ -1,4 +1,5 @@
 mod agent_auth;
+mod agent_adoption;
 mod agent_config;
 mod agent_discovery;
 mod agent_drafts;
@@ -63,6 +64,7 @@ mod workflows;
 mod workspace;
 
 pub use agent_auth::*;
+pub use agent_adoption::*;
 pub use agent_config::*;
 pub use agent_discovery::*;
 pub use agent_drafts::*;
