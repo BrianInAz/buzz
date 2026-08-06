@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  AGENT_MANAGEMENT_REQUEST,
+  AGENT_DRAFT_VERSION,
   createInputFromRequest,
   requestTargetsEditablePersona,
   parseAgentManagementRequest,
@@ -12,11 +12,11 @@ const CHANNEL_ID = "7c07e659-3610-42f4-9a5e-1e9973c09da9";
 
 function createPayload(overrides = {}) {
   return {
-    type: AGENT_MANAGEMENT_REQUEST,
+    version: AGENT_DRAFT_VERSION,
     action: "create",
     requestId: "request-1",
+    channelId: CHANNEL_ID,
     request: {
-      channelId: CHANNEL_ID,
       displayName: "Research helper",
       systemPrompt: "Find reliable sources and summarize them.",
     },
@@ -61,9 +61,14 @@ test("chat creation leaves advanced behavior unset so the form stays collapsed",
   });
 });
 
+test("rejects an unsupported payload version (fail closed)", () => {
+  const payload = createPayload({ version: 2 });
+  assert.equal(parseAgentManagementRequest(payload), null);
+});
+
 test("requires the originating channel for profile updates", () => {
   const payload = {
-    type: AGENT_MANAGEMENT_REQUEST,
+    version: AGENT_DRAFT_VERSION,
     action: "update",
     requestId: "request-2",
     request: {
@@ -77,11 +82,11 @@ test("requires the originating channel for profile updates", () => {
 
 test("uses an agent's current name, never an internal profile ID", () => {
   const payload = {
-    type: AGENT_MANAGEMENT_REQUEST,
+    version: AGENT_DRAFT_VERSION,
     action: "update",
     requestId: "request-3",
+    channelId: CHANNEL_ID,
     request: {
-      channelId: CHANNEL_ID,
       agentName: "Review helper",
       systemPrompt: "Review changes concisely.",
     },
