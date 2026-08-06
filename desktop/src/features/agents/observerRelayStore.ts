@@ -9,6 +9,7 @@ import { getIdentity } from "@/shared/api/tauriIdentity";
 import { decryptObserverEvent } from "@/shared/api/tauriObserver";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { useQueryClient } from "@tanstack/react-query";
+import { useIdentityQuery } from "@/shared/api/hooks";
 import { agentConfigSurfaceQueryKey } from "@/features/agents/hooks";
 import type {
   ConnectionState,
@@ -567,17 +568,15 @@ export function getAgentTranscript(
   return state?.items ?? EMPTY_TRANSCRIPT;
 }
 
-export function shouldObserveManagedAgents(
-  agents: readonly Pick<ManagedAgent, "pubkey">[],
-): boolean {
-  return agents.length > 0;
-}
-
 export function useManagedAgentObserverBridge(
   agents: readonly Pick<ManagedAgent, "pubkey" | "status">[],
 ) {
   const subscriptionId = React.useId();
-  const hasManagedAgent = shouldObserveManagedAgents(agents);
+  const identityQuery = useIdentityQuery();
+  // B2 cold-start fix: open the owner-global 24200 REQ whenever an identity is
+  // known, regardless of `agents.length`. A newly adopted external agent's
+  // live telemetry must be subscribed even when no agent existed before.
+  const hasIdentity = Boolean(identityQuery.data?.pubkey);
 
   const agentPubkeys = React.useMemo(
     () => agents.map((agent) => agent.pubkey),
@@ -595,11 +594,11 @@ export function useManagedAgentObserverBridge(
   }, [subscriptionId, agentPubkeys]);
 
   React.useEffect(() => {
-    if (!hasManagedAgent) {
+    if (!hasIdentity) {
       return;
     }
     void ensureRelayObserverSubscription();
-  }, [hasManagedAgent]);
+  }, [hasIdentity]);
 
   // Wire up config-surface query invalidation when session_config_captured fires.
   const queryClient = useQueryClient();
