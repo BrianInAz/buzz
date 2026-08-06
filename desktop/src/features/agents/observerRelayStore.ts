@@ -570,12 +570,15 @@ export function getAgentTranscript(
 
 export function useManagedAgentObserverBridge(
   agents: readonly Pick<ManagedAgent, "pubkey" | "status">[],
+  observerReconciled: boolean,
 ) {
   const subscriptionId = React.useId();
   const identityQuery = useIdentityQuery();
   // B2 cold-start fix: open the owner-global 24200 REQ whenever an identity is
   // known, regardless of `agents.length`. A newly adopted external agent's
-  // live telemetry must be subscribed even when no agent existed before.
+  // live telemetry must be subscribed even when no agent existed before. Still
+  // gated on the observer-archive policy resolving, so the live filter never
+  // opens before kind 24200 is guaranteed present in the subscription.
   const hasIdentity = Boolean(identityQuery.data?.pubkey);
 
   const agentPubkeys = React.useMemo(
@@ -594,11 +597,11 @@ export function useManagedAgentObserverBridge(
   }, [subscriptionId, agentPubkeys]);
 
   React.useEffect(() => {
-    if (!hasIdentity) {
+    if (!hasIdentity || !observerReconciled) {
       return;
     }
     void ensureRelayObserverSubscription();
-  }, [hasIdentity]);
+  }, [hasIdentity, observerReconciled]);
 
   // Wire up config-surface query invalidation when session_config_captured fires.
   const queryClient = useQueryClient();

@@ -178,17 +178,17 @@ export function AppShell() {
   // Owner-global observer ingestion: receives + decrypts agent observer
   // frames and keeps derived active-turn liveness in sync app-wide, so no
   // individual screen/panel has to mount its own bridge for ingestion.
-  // Intentionally mounted without a `startupReady`/identity guard: before
-  // `currentPubkey` resolves the hook ingests managed agents only, and
-  // relay-owned agents join automatically once identity arrives. Adding a
-  // guard here would drop managed-agent coverage during startup.
-  useAgentObserverIngestion();
   // Kind 24200 is relay-ephemeral, so reconciliation runs eagerly (not
   // deferred) and unconditionally repairs the DB subscription on internal
   // builds — otherwise frames emitted before the listener opens are lost.
   const observerReconciled = useObserverArchiveReconciliation(
     identityQuery.data?.pubkey,
   );
+  // Intentionally mounted without a `startupReady`/identity guard: before
+  // `currentPubkey` resolves the hook ingests managed agents only, and
+  // relay-owned agents join once identity arrives. The live 24200 filter
+  // still waits for `observerReconciled` so it never opens too early.
+  useAgentObserverIngestion(observerReconciled);
   // useArchiveSync must wait for reconciliation, or listeners could open
   // before kind 24200 is guaranteed present in the subscription.
   useArchiveSync(observerReconciled);
