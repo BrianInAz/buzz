@@ -798,7 +798,7 @@ pub fn run() {
             list_relay_agents,
             list_managed_agents,
             list_pending_agent_drafts, resolve_agent_draft, adopt_external_agent,
-            list_managed_agent_runtimes,
+            import_external_agent_key, list_managed_agent_runtimes,
             start_managed_agent_runtime,
             stop_managed_agent_runtime,
             restart_managed_agent_runtime,

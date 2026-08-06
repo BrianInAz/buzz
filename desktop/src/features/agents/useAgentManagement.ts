@@ -9,6 +9,10 @@ import {
 } from "./agentManagement";
 import { resolveDraft, useNextPendingAgentDraft } from "./agentDraftStore";
 import { classifyAgentDraftOrigin } from "./agentDraftTrust";
+import {
+  adoptExternalAgent,
+  importExternalAgentKey,
+} from "@/shared/api/tauriAgentDrafts";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import {
@@ -70,6 +74,9 @@ export function useAgentManagement() {
   const updatePersonaMutation = useUpdatePersonaMutation();
   const createAgentMutation = useCreateManagedAgentMutation();
   const [error, setError] = React.useState<string | null>(null);
+  const [adoptedAuthTag, setAdoptedAuthTag] = React.useState<string | null>(
+    null,
+  );
   const createdAgentAttachment = useCreatedAgentChannelAttachment();
   // In-session guard: a draft is resolved durably via its 44301 event, so this
   // set only prevents double-publishing within this session.
@@ -246,6 +253,67 @@ export function useAgentManagement() {
     void publishResolution("declined");
   }
 
+  /** Adopt the requesting agent's existing identity (no new keypair). */
+  async function adopt(): Promise<boolean> {
+    if (!nextDraft || nextDraft.action !== "create") {
+      return false;
+    }
+    setError(null);
+    try {
+      assertAgentCanActFromOrigin(nextDraft.channelId);
+      const result = await adoptExternalAgent({
+        agentPubkey: nextDraft.agentPubkey,
+        displayName: nextDraft.displayName ?? "",
+        systemPrompt: nextDraft.systemPrompt,
+        channelId: nextDraft.channelId,
+        runtime: nextDraft.runtime,
+        provider: nextDraft.provider,
+        model: nextDraft.model,
+        respondTo: nextDraft.respondTo,
+      });
+      setAdoptedAuthTag(result.authTag);
+      await publishResolution("accepted", nextDraft.agentPubkey);
+      await queryClient.invalidateQueries({
+        queryKey: managedAgentsQueryKey,
+      });
+      return true;
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "Could not adopt this agent.",
+      );
+      return false;
+    }
+  }
+
+  /** Import the agent's private key so the desktop can run it locally. */
+  async function importKey(nsec: string): Promise<boolean> {
+    if (!nextDraft || nextDraft.action !== "create") {
+      return false;
+    }
+    setError(null);
+    try {
+      assertAgentCanActFromOrigin(nextDraft.channelId);
+      const result = await importExternalAgentKey({
+        agentPubkey: nextDraft.agentPubkey,
+        nsec,
+        displayName: nextDraft.displayName ?? "",
+      });
+      setAdoptedAuthTag(result.authTag);
+      await publishResolution("accepted", nextDraft.agentPubkey);
+      await queryClient.invalidateQueries({
+        queryKey: managedAgentsQueryKey,
+      });
+      return true;
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Could not import this agent key.",
+      );
+      return false;
+    }
+  }
+
   const createInitialValues = React.useMemo(
     () =>
       visibleRequest?.action === "create"
@@ -277,16 +345,20 @@ export function useAgentManagement() {
 
   return {
     request: visibleRequest,
+    nextDraft,
     createInitialValues,
     editInitialValues,
     editError,
     error,
+    adoptedAuthTag,
     ...createdAgentAttachment,
     isPending,
     runtimes: runtimesQuery.data ?? [],
     runtimesLoading: runtimesQuery.isLoading,
     submitCreate,
     submitUpdate,
+    adopt,
+    importKey,
     dismiss,
   };
 }

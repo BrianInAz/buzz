@@ -24,8 +24,87 @@ pub struct AdoptExternalAgentResult {
     pub name: String,
     /// The minted NIP-OA auth tag (owner-attested).
     pub auth_tag: String,
-    /// Always `"external"`.
+    /// `"external"` for adoption, `"local"` for key import.
     pub backend: String,
+}
+
+/// Build a managed-agent record for an existing identity (no new keypair).
+#[allow(clippy::too_many_arguments)]
+fn build_record(
+    state: &AppState,
+    agent_pubkey: &nostr::PublicKey,
+    display_name: &str,
+    system_prompt: Option<String>,
+    runtime: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    respond_to: RespondTo,
+    private_key_nsec: String,
+    backend: BackendKind,
+) -> Result<ManagedAgentRecord, String> {
+    let auth_tag = {
+        let owner_keys = state.signing_keys()?;
+        let compat_owner = nostr::Keys::parse(&owner_keys.secret_key().to_secret_hex())
+            .map_err(|e| format!("failed to bridge owner keys: {e}"))?;
+        buzz_sdk_pkg::nip_oa::compute_auth_tag(&compat_owner, agent_pubkey, "")
+            .map_err(|e| format!("failed to compute NIP-OA auth tag: {e}"))?
+    };
+    let agent_hex = agent_pubkey.to_hex();
+    Ok(ManagedAgentRecord {
+        pubkey: agent_hex.clone(),
+        name: display_name.to_string(),
+        persona_id: None,
+        private_key_nsec,
+        auth_tag: Some(auth_tag.clone()),
+        relay_url: crate::relay::relay_api_base_url_with_override(state),
+        avatar_url: None,
+        acp_command: String::new(),
+        agent_command: String::new(),
+        agent_command_override: None,
+        agent_args: vec![],
+        mcp_command: String::new(),
+        turn_timeout_seconds: crate::managed_agents::DEFAULT_AGENT_TURN_TIMEOUT_SECONDS,
+        idle_timeout_seconds: None,
+        max_turn_duration_seconds: None,
+        parallelism: 1,
+        system_prompt,
+        model,
+        provider,
+        persona_source_version: None,
+        env_vars: Default::default(),
+        start_on_app_launch: false,
+        runtime_pid: None,
+        backend,
+        backend_agent_id: None,
+        provider_binary_path: None,
+        team_id: None,
+        persona_team_dir: None,
+        persona_name_in_team: None,
+        created_at: crate::util::now_iso(),
+        updated_at: crate::util::now_iso(),
+        last_started_at: None,
+        last_stopped_at: None,
+        last_exit_code: None,
+        last_error: None,
+        last_error_code: None,
+        respond_to,
+        respond_to_allowlist: vec![],
+        display_name: Some(display_name.to_string()),
+        slug: None,
+        runtime,
+        name_pool: vec![],
+        is_builtin: false,
+        is_active: true,
+        shared: false,
+        source_team: None,
+        source_team_persona_slug: None,
+        catalog_source: None,
+        relay_mesh: None,
+        auto_restart_on_config_change: false,
+        definition_respond_to: None,
+        definition_respond_to_allowlist: vec![],
+        definition_parallelism: None,
+    })
 }
 
 /// Adopt an existing agent identity (external pubkey) under the current owner.
@@ -57,16 +136,6 @@ pub async fn adopt_external_agent(
     }
     let _ = channel_id; // channel identity is advisory; the agent drives itself
 
-    // Attest-first: mint the NIP-OA auth tag from the owner's secret and the
-    // agent's public key. No new keypair. Fail closed on any mint error.
-    let auth_tag = {
-        let owner_keys = state.signing_keys()?;
-        let compat_owner = nostr::Keys::parse(&owner_keys.secret_key().to_secret_hex())
-            .map_err(|e| format!("failed to bridge owner keys: {e}"))?;
-        buzz_sdk_pkg::nip_oa::compute_auth_tag(&compat_owner, &agent_pubkey, "")
-            .map_err(|e| format!("failed to compute NIP-OA auth tag: {e}"))?
-    };
-
     let respond_to = match respond_to.as_deref() {
         None | Some("owner-only") => RespondTo::OwnerOnly,
         Some("anyone") => RespondTo::Anyone,
@@ -74,61 +143,19 @@ pub async fn adopt_external_agent(
         Some(other) => return Err(format!("invalid respond-to: {other}")),
     };
 
-    let record = ManagedAgentRecord {
-        pubkey: agent_hex.clone(),
-        name: display_name.clone(),
-        persona_id: None,
-        private_key_nsec: String::new(),
-        auth_tag: Some(auth_tag.clone()),
-        relay_url: crate::relay::relay_api_base_url_with_override(&state),
-        avatar_url: None,
-        acp_command: String::new(),
-        agent_command: String::new(),
-        agent_command_override: None,
-        agent_args: vec![],
-        mcp_command: String::new(),
-        turn_timeout_seconds: crate::managed_agents::DEFAULT_AGENT_TURN_TIMEOUT_SECONDS,
-        idle_timeout_seconds: None,
-        max_turn_duration_seconds: None,
-        parallelism: 1,
+    let record = build_record(
+        &state,
+        &agent_pubkey,
+        &display_name,
         system_prompt,
-        model,
-        provider,
-        persona_source_version: None,
-        env_vars: Default::default(),
-        start_on_app_launch: false,
-        runtime_pid: None,
-        backend: BackendKind::External,
-        backend_agent_id: None,
-        provider_binary_path: None,
-        team_id: None,
-        persona_team_dir: None,
-        persona_name_in_team: None,
-        created_at: crate::util::now_iso(),
-        updated_at: crate::util::now_iso(),
-        last_started_at: None,
-        last_stopped_at: None,
-        last_exit_code: None,
-        last_error: None,
-        last_error_code: None,
-        respond_to,
-        respond_to_allowlist: vec![],
-        display_name: Some(display_name.clone()),
-        slug: None,
         runtime,
-        name_pool: vec![],
-        is_builtin: false,
-        is_active: true,
-        shared: false,
-        source_team: None,
-        source_team_persona_slug: None,
-        catalog_source: None,
-        relay_mesh: None,
-        auto_restart_on_config_change: false,
-        definition_respond_to: None,
-        definition_respond_to_allowlist: vec![],
-        definition_parallelism: None,
-    };
+        provider,
+        model,
+        respond_to,
+        String::new(),
+        BackendKind::External,
+    )?;
+    let auth_tag = record.auth_tag.clone().unwrap_or_default();
 
     // Persist under the store lock, guarding against a duplicate pubkey.
     {
@@ -149,6 +176,68 @@ pub async fn adopt_external_agent(
         name: display_name,
         auth_tag,
         backend: "external".to_string(),
+    })
+}
+
+/// Import an existing agent's private key so the desktop can run it locally.
+///
+/// The `nsec` must match `agent_pubkey`. The agent is stored with
+/// `BackendKind::Local` (it can be spawned/restarted by the desktop) and the
+/// NIP-OA auth tag is minted from the owner's secret and the agent's public
+/// key, exactly as adoption does.
+#[tauri::command]
+pub async fn import_external_agent_key(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    agent_pubkey: String,
+    nsec: String,
+    display_name: String,
+) -> Result<AdoptExternalAgentResult, String> {
+    let agent_pubkey = nostr::PublicKey::parse(&agent_pubkey)
+        .map_err(|e| format!("invalid agent pubkey: {e}"))?;
+    let agent_hex = agent_pubkey.to_hex();
+    let display_name = display_name.trim().to_string();
+    if display_name.is_empty() {
+        return Err("display name is required".to_string());
+    }
+    let keys = nostr::Keys::parse(nsec.trim())
+        .map_err(|e| format!("invalid nsec: {e}"))?;
+    if keys.public_key() != agent_pubkey {
+        return Err("nsec does not match the agent pubkey".to_string());
+    }
+
+    let record = build_record(
+        &state,
+        &agent_pubkey,
+        &display_name,
+        None,
+        None,
+        None,
+        None,
+        RespondTo::OwnerOnly,
+        nsec.trim().to_string(),
+        BackendKind::Local,
+    )?;
+    let auth_tag = record.auth_tag.clone().unwrap_or_default();
+
+    {
+        let _store_guard = state
+            .managed_agents_store_lock
+            .lock()
+            .map_err(|e| e.to_string())?;
+        let mut records = load_managed_agents(&app)?;
+        if records.iter().any(|r| r.pubkey == agent_hex) {
+            return Err(format!("agent {agent_hex} already exists"));
+        }
+        records.push(record);
+        save_managed_agents(&app, &records)?;
+    }
+
+    Ok(AdoptExternalAgentResult {
+        pubkey: agent_hex,
+        name: display_name,
+        auth_tag,
+        backend: "local".to_string(),
     })
 }
 

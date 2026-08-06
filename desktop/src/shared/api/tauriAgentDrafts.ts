@@ -57,3 +57,75 @@ export async function resolveAgentDraft(input: {
     message: response.message,
   };
 }
+
+export type AdoptExternalAgentResult = {
+  pubkey: string;
+  name: string;
+  authTag: string;
+  backend: string;
+};
+
+/**
+ * Adopt an existing agent identity under the current owner. Attest-first:
+ * mints the NIP-OA `BUZZ_AUTH_TAG` from the agent's public key and the owner's
+ * secret — no new keypair is generated.
+ */
+export async function adoptExternalAgent(input: {
+  agentPubkey: string;
+  displayName: string;
+  systemPrompt?: string;
+  channelId?: string;
+  runtime?: string;
+  provider?: string;
+  model?: string;
+  respondTo?: string;
+}): Promise<AdoptExternalAgentResult> {
+  const response = await invokeTauri<{
+    pubkey: string;
+    name: string;
+    auth_tag: string;
+    backend: string;
+  }>("adopt_external_agent", {
+    agentPubkey: input.agentPubkey,
+    displayName: input.displayName,
+    systemPrompt: input.systemPrompt,
+    channelId: input.channelId,
+    runtime: input.runtime,
+    provider: input.provider,
+    model: input.model,
+    respondTo: input.respondTo,
+  });
+  return {
+    pubkey: response.pubkey,
+    name: response.name,
+    authTag: response.auth_tag,
+    backend: response.backend,
+  };
+}
+
+/**
+ * Import an existing agent's private key so the desktop can run it locally.
+ * The `nsec` must match `agentPubkey`.
+ */
+export async function importExternalAgentKey(input: {
+  agentPubkey: string;
+  nsec: string;
+  displayName: string;
+}): Promise<AdoptExternalAgentResult> {
+  const response = await invokeTauri<{
+    pubkey: string;
+    name: string;
+    auth_tag: string;
+    backend: string;
+  }>("import_external_agent_key", {
+    agentPubkey: input.agentPubkey,
+    nsec: input.nsec,
+    displayName: input.displayName,
+  });
+  return {
+    pubkey: response.pubkey,
+    name: response.name,
+    authTag: response.auth_tag,
+    backend: response.backend,
+  };
+}

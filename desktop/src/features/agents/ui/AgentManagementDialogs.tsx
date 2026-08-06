@@ -1,6 +1,7 @@
 import { useAgentManagement } from "@/features/agents/useAgentManagement";
 import { AgentCardDialogs } from "./AgentCardViewerDialog";
 import { AgentDialog } from "./AgentDialog";
+import { AgentDraftAdoptDialog } from "./AgentDraftAdoptDialog";
 import { SecretRevealDialog } from "./SecretRevealDialog";
 
 /** Global review surfaces opened by owned agents through the Buzz harness. */
@@ -9,20 +10,18 @@ export function AgentManagementDialogs() {
 
   return (
     <>
-      {management.request?.action === "create" ? (
-        <AgentDialog
-          definitionError={
-            management.error ? new Error(management.error) : null
-          }
-          initialValues={management.createInitialValues}
-          isDefinitionPending={management.isPending}
-          mode="definition"
+      {management.request?.action === "create" &&
+      management.nextDraft?.action === "create" ? (
+        <AgentDraftAdoptDialog
+          adoptedAuthTag={management.adoptedAuthTag}
+          draft={management.nextDraft}
+          error={management.error}
+          isPending={management.isPending}
+          onAdopt={management.adopt}
+          onImportKey={management.importKey}
           onOpenChange={(open) => {
             if (!open) management.dismiss();
           }}
-          onSubmitDefinition={management.submitCreate}
-          runtimes={management.runtimes}
-          runtimesLoading={management.runtimesLoading}
         />
       ) : null}
       {management.createdAgent ? (
