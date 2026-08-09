@@ -2028,6 +2028,22 @@ async fn run(cli: Cli) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires BUZZ_TEST_WSS_URL and network access"]
+    async fn configured_wss_trusts_native_platform_roots() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let url = std::env::var("BUZZ_TEST_WSS_URL")
+            .expect("BUZZ_TEST_WSS_URL must name the WSS endpoint to verify");
+
+        let connection = buzz_ws_client::NostrWsConnection::connect(&url)
+            .await
+            .expect("configured WSS endpoint should trust the platform certificate store");
+        connection
+            .disconnect()
+            .await
+            .expect("configured WSS endpoint should close cleanly");
+    }
     use clap::CommandFactory;
 
     /// Raw shorthand `[auth,hex,,hex]` normalizes to strict JSON; the empty
