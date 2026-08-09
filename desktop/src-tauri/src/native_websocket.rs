@@ -350,6 +350,22 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires BUZZ_TEST_WSS_URL and network access"]
+    async fn configured_wss_trusts_native_platform_roots() {
+        install_crypto_provider();
+        let url = std::env::var("BUZZ_TEST_WSS_URL")
+            .expect("BUZZ_TEST_WSS_URL must name the WSS endpoint to verify");
+
+        tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            tokio_tungstenite::connect_async(url.as_str()),
+        )
+        .await
+        .expect("configured WSS endpoint should complete before the connection timeout")
+        .expect("configured WSS endpoint should trust the platform certificate store");
+    }
+
+    #[tokio::test]
     async fn secure_websocket_reaches_tls_without_panicking() {
         install_crypto_provider();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
