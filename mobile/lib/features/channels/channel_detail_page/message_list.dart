@@ -27,6 +27,7 @@ class _MessageList extends HookConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final displayEntries = groupMembershipTimelineEntries(entries);
     final itemScrollController = useMemoized(ItemScrollController.new);
+    final scrollOffsetController = useMemoized(ScrollOffsetController.new);
     final itemPositionsListener = useMemoized(ItemPositionsListener.create);
     final isLoadingOlder = useState(false);
     final isAtLatest = useState(true);
@@ -40,6 +41,13 @@ class _MessageList extends HookConsumerWidget {
     final previousLatestEntryId = useRef<String?>(null);
     final didOpenInitialThread = useRef(false);
     final didJumpToInitialMessage = useRef(false);
+    final reversedEntryIds = [
+      for (final group in displayEntries.reversed) group.first.message.id,
+    ];
+    final visibleEntryPositions = useRef(<String, ItemPosition>{});
+    final pendingAnchorRestore = useRef<({String id, double leadingEdge})?>(
+      null,
+    );
 
     int? reversedIndexOf(String? messageId) {
       if (messageId == null) return null;
@@ -96,6 +104,38 @@ class _MessageList extends HookConsumerWidget {
       void onPositionsChanged() {
         final positions = itemPositionsListener.itemPositions.value;
         if (positions.isEmpty) return;
+        visibleEntryPositions.value = {
+          for (final position in positions)
+            if (position.index < reversedEntryIds.length)
+              reversedEntryIds[position.index]: position,
+        };
+        final pendingAnchor = pendingAnchorRestore.value;
+        if (pendingAnchor != null &&
+            (followsLatest.value || latestIsAtBoundary())) {
+          pendingAnchorRestore.value = null;
+        } else if (pendingAnchor != null) {
+          final currentAnchor = visibleEntryPositions.value[pendingAnchor.id];
+          final viewportExtent = context.size?.height;
+          if (currentAnchor != null &&
+              viewportExtent != null &&
+              viewportExtent > 0) {
+            pendingAnchorRestore.value = null;
+            final offset =
+                (currentAnchor.itemLeadingEdge - pendingAnchor.leadingEdge) *
+                viewportExtent;
+            if (offset.abs() >= 0.5) {
+              // The reversed list retains its numeric index when index 0 is
+              // prepended, which shifts the user's visible message. Restore
+              // the stable message ID by exactly the measured viewport delta.
+              unawaited(
+                scrollOffsetController.animateScroll(
+                  offset: offset,
+                  duration: const Duration(milliseconds: 1),
+                ),
+              );
+            }
+          }
+        }
         final nextIsAtLatest = latestIsAtBoundary();
         if (nextIsAtLatest) {
           if (!isAtLatest.value) isAtLatest.value = true;
@@ -179,10 +219,31 @@ class _MessageList extends HookConsumerWidget {
       previousLatestEntryId.value = latestEntryId;
       if (previous == null ||
           latestEntryId == null ||
-          previous == latestEntryId ||
-          !isAtLatest.value) {
+          previous == latestEntryId) {
         return null;
       }
+
+      if (!isAtLatest.value) {
+        MapEntry<String, ItemPosition>? anchor;
+        for (final entry in visibleEntryPositions.value.entries) {
+          final position = entry.value;
+          if (position.itemLeadingEdge < 0 ||
+              position.itemLeadingEdge >= 1 ||
+              (anchor != null && position.index >= anchor.value.index)) {
+            continue;
+          }
+          anchor = entry;
+        }
+        if (anchor == null) return null;
+
+        if (!reversedEntryIds.contains(anchor.key)) return null;
+        pendingAnchorRestore.value = (
+          id: anchor.key,
+          leadingEdge: anchor.value.itemLeadingEdge,
+        );
+        return null;
+      }
+
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (context.mounted) scrollToLatest();
       });
@@ -250,6 +311,7 @@ class _MessageList extends HookConsumerWidget {
             child: ScrollablePositionedList.builder(
               key: const ValueKey('channel-message-list'),
               itemScrollController: itemScrollController,
+              scrollOffsetController: scrollOffsetController,
               itemPositionsListener: itemPositionsListener,
               reverse: true,
               padding: EdgeInsets.only(
