@@ -3,11 +3,12 @@
 ## Status
 
 Implemented and validated from base commit `0f7edef101f2` on the isolated
-`fix/ios-peer-presence-hydration` worktree. Pull request and merged commit links
-will be added at delivery.
+`fix/ios-peer-presence-hydration` worktree. Source delivery is tracked in pull
+request [#25](https://github.com/BrianInAz/buzz/pull/25); the merged commit will
+be recorded after the human-triggered merge.
 
 - Beads epic: `ios-buzz-59e`
-- Pull request: pending
+- Pull request: [#25](https://github.com/BrianInAz/buzz/pull/25)
 - Merged commit: pending
 - Acceptance date: 2026-08-10
 
