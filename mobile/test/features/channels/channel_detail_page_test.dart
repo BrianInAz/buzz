@@ -1184,6 +1184,9 @@ void main() {
           find.byKey(const ValueKey('channel-jump-to-latest')),
           findsOneWidget,
         );
+        final tallMessageRectBeforeUpdate = tester.getRect(
+          findRichText('Newest message line 0'),
+        );
 
         messagesNotifier.setMessages([
           ...initialMessages,
@@ -1196,10 +1199,33 @@ void main() {
         ]);
         await tester.pumpAndSettle();
 
-        expect(findRichText('Newest live update'), findsNothing);
+        final newestLiveUpdate = findRichText('Newest live update');
+        expect(newestLiveUpdate.hitTestable(), findsNothing);
+        final tallMessageRectAfterUpdate = tester.getRect(
+          findRichText('Newest message line 0'),
+        );
+        expect(
+          tallMessageRectAfterUpdate.top,
+          closeTo(tallMessageRectBeforeUpdate.top, 1),
+        );
+        expect(
+          tallMessageRectAfterUpdate.bottom,
+          closeTo(tallMessageRectBeforeUpdate.bottom, 1),
+        );
         expect(
           find.byKey(const ValueKey('channel-jump-to-latest')),
           findsOneWidget,
+        );
+        await tester.tap(find.byKey(const ValueKey('channel-jump-to-latest')));
+        await tester.pumpAndSettle();
+
+        expect(
+          findRichText('Newest live update').hitTestable(),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey('channel-jump-to-latest')),
+          findsNothing,
         );
       },
     );
