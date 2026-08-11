@@ -655,6 +655,11 @@ mod tests {
         use crate::relay_admission::MAX_HINT_SECONDS;
         use std::io::{Read as _, Write as _};
 
+        // relay_error_message() arms the process-wide admission gate on 429.
+        // Participate in the gate test boundary so this test cannot leak its
+        // 300-second capped expiry into parallel relay_admission tests.
+        let _gate_isolation = crate::relay_admission::isolate_test_gate().await;
+
         // Use a std::net listener on a std::thread — the same pattern as the
         // relay_admission loopback tests. This avoids two races that cause CI
         // failures with tokio::net + into_std():

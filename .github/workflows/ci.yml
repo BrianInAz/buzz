@@ -50,8 +50,7 @@ jobs:
             desktop:
               - 'scripts/check-file-sizes-core.mjs'
               - 'scripts/check-file-sizes-core.test.mjs'
-              - 'desktop/**'
-              - '!desktop/src-tauri/**'
+              - 'desktop/!(src-tauri)/**'
               - 'pnpm-lock.yaml'
             desktop-rust:
               - 'desktop/src-tauri/**'
@@ -78,6 +77,8 @@ jobs:
         run: scripts/test-release-ref-contract.sh
       - name: Private CA release workflow contract
         run: scripts/test-private-ca-release-contract.sh
+      - name: Sprig rolling release contract
+        run: scripts/test-publish-sprig-rolling-release.sh
       - name: Desktop release candidate contract
         run: scripts/test-desktop-release-candidate.sh
       - name: Mobile release contract
@@ -88,6 +89,8 @@ jobs:
         run: scripts/test-mobile-worktree-overrides.sh
       - name: File size ratchet unit tests
         run: node --test scripts/check-file-sizes-core.test.mjs
+      - name: CI path filter contract
+        run: node --test scripts/ci-path-filters.test.mjs
 
   rust-lint:
     name: Rust Lint
