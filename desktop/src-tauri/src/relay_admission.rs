@@ -100,14 +100,52 @@ pub fn reset_rate_limit_gate() {
     *GATE_EXPIRY.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
+// The gate is process-wide, so every test that can arm it must serialize on
+// the same lock even when that test lives in another module.
+#[cfg(test)]
+static TEST_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// RAII boundary for tests outside this module that exercise a path capable of
+/// arming the process-wide gate. It starts clean and clears the gate before
+/// releasing the shared test lock, including when the test unwinds.
+#[cfg(test)]
+pub(crate) struct TestGateIsolation {
+    _serial: tokio::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl Drop for TestGateIsolation {
+    fn drop(&mut self) {
+        reset_rate_limit_gate();
+    }
+}
+
+#[cfg(test)]
+pub(crate) async fn isolate_test_gate() -> TestGateIsolation {
+    let serial = TEST_SERIAL.lock().await;
+    reset_rate_limit_gate();
+    TestGateIsolation { _serial: serial }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // The gate is a process-wide static shared by every test in this binary,
-    // so all gate tests serialize on one async lock to keep armed expiries
-    // from bleeding between parallel test threads.
-    pub(crate) static TEST_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    #[tokio::test(start_paused = true)]
+    async fn isolation_guard_clears_an_armed_gate_when_dropped() {
+        let start = Instant::now();
+        {
+            let _gate_isolation = isolate_test_gate().await;
+            activate_rate_limit(Some(MAX_HINT_SECONDS));
+        }
+
+        wait_for_rate_limit().await;
+        assert_eq!(
+            Instant::now(),
+            start,
+            "dropping the test isolation guard must clear the process-wide gate"
+        );
+    }
 
     #[tokio::test(start_paused = true)]
     async fn wait_returns_immediately_when_gate_is_inactive() {
