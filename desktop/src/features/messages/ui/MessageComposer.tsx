@@ -701,9 +701,9 @@ function MessageComposerImpl({
 
       const channelResult = channelLinks.handleChannelKeyDown(event);
       if (channelResult.handled) {
-        if (channelResult.suggestion) {
+        if (channelResult.submit) submitMessageRef.current();
+        else if (channelResult.suggestion)
           applyChannelInsert(channelResult.suggestion);
-        }
         return;
       }
 

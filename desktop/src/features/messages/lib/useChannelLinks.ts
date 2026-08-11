@@ -2,6 +2,7 @@ import * as React from "react";
 
 import { useChannelNavigation } from "@/shared/context/ChannelNavigationContext";
 import { detectPrefixQuery } from "@/shared/lib/detectPrefixQuery";
+import { flushChannelDebounce } from "./flushChannelDebounce";
 import type { AutocompleteEdit } from "./useRichTextEditor";
 
 export type ChannelSuggestion = {
@@ -24,11 +25,24 @@ export function useChannelLinks() {
   );
   const latestValueRef = React.useRef<string>("");
   const latestCursorRef = React.useRef<number>(0);
+  const flushedChannelStartIndexRef = React.useRef<number | null>(null);
+
+  const channelCandidates = React.useMemo<ChannelSuggestion[]>(
+    () =>
+      channels
+        .filter((channel) => channel.channelType !== "dm")
+        .map((channel) => ({
+          id: channel.id,
+          name: channel.name,
+          channelType: channel.channelType as "stream" | "forum",
+        })),
+    [channels],
+  );
 
   /** Channel names (original casing) for overlay highlighting. */
   const knownChannelNames = React.useMemo<string[]>(
-    () => channels.filter((ch) => ch.channelType !== "dm").map((ch) => ch.name),
-    [channels],
+    () => channelCandidates.map((channel) => channel.name),
+    [channelCandidates],
   );
 
   /** Lower-cased channel names for case-insensitive prefix matching. */
@@ -58,18 +72,10 @@ export function useChannelLinks() {
     }
 
     const lowerQuery = channelQuery.toLowerCase();
-    return channels
-      .filter(
-        (ch) =>
-          ch.channelType !== "dm" && ch.name.toLowerCase().includes(lowerQuery),
-      )
-      .slice(0, 8)
-      .map((ch) => ({
-        id: ch.id,
-        name: ch.name,
-        channelType: ch.channelType as "stream" | "forum",
-      }));
-  }, [channels, channelQuery]);
+    return channelCandidates
+      .filter((channel) => channel.name.toLowerCase().includes(lowerQuery))
+      .slice(0, 8);
+  }, [channelCandidates, channelQuery]);
 
   const isChannelOpen = channelQuery !== null && channelSuggestions.length > 0;
 
@@ -85,8 +91,11 @@ export function useChannelLinks() {
       setChannelQuery(null);
       setChannelSelectedIndex(0);
 
+      const startIndex =
+        flushedChannelStartIndexRef.current ?? channelStartIndex;
+      flushedChannelStartIndexRef.current = null;
       return {
-        replaceFromOffset: channelStartIndex,
+        replaceFromOffset: startIndex,
         replaceToOffset: selectionEnd,
         insertText,
       };
@@ -129,6 +138,7 @@ export function useChannelLinks() {
       clearTimeout(debounceTimerRef.current);
       debounceTimerRef.current = null;
     }
+    flushedChannelStartIndexRef.current = null;
     setChannelQuery(null);
     setChannelSelectedIndex(0);
   }, []);
@@ -136,7 +146,22 @@ export function useChannelLinks() {
   const handleChannelKeyDown = React.useCallback(
     (
       event: React.KeyboardEvent,
-    ): { handled: boolean; suggestion?: ChannelSuggestion } => {
+    ):
+      | { handled: false }
+      | {
+          handled: true;
+          suggestion?: ChannelSuggestion;
+          submit?: true;
+        } => {
+      if (
+        event.key === "Escape" &&
+        (isChannelOpen || debounceTimerRef.current !== null)
+      ) {
+        event.preventDefault();
+        clearChannels();
+        return { handled: true };
+      }
+
       if (!isChannelOpen) {
         return { handled: false };
       }
@@ -157,14 +182,41 @@ export function useChannelLinks() {
         return { handled: true };
       }
 
-      if (
-        event.key === "Tab" ||
-        (event.key === "Enter" &&
-          !event.ctrlKey &&
-          !event.metaKey &&
-          !event.altKey &&
-          !event.shiftKey)
-      ) {
+      const isPlainEnter =
+        event.key === "Enter" &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        !event.shiftKey;
+      if (event.key === "Tab" || isPlainEnter) {
+        if (debounceTimerRef.current !== null) {
+          const flushed = flushChannelDebounce({
+            channels: channelCandidates,
+            debounceTimerRef,
+            knownNamesLowerRef,
+            latestCursorRef,
+            latestValueRef,
+          });
+          if (flushed.type === "match") {
+            event.preventDefault();
+            flushedChannelStartIndexRef.current = flushed.startIndex;
+            setChannelQuery(null);
+            return { handled: true, suggestion: flushed.suggestion };
+          }
+          if (flushed.type === "no-match") {
+            event.preventDefault();
+            clearChannels();
+            return { handled: true };
+          }
+
+          clearChannels();
+          if (isPlainEnter) {
+            event.preventDefault();
+            return { handled: true, submit: true };
+          }
+          return { handled: false };
+        }
+
         event.preventDefault();
         return {
           handled: true,
@@ -172,15 +224,15 @@ export function useChannelLinks() {
         };
       }
 
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setChannelQuery(null);
-        return { handled: true };
-      }
-
       return { handled: false };
     },
-    [isChannelOpen, channelSelectedIndex, channelSuggestions],
+    [
+      channelCandidates,
+      channelSelectedIndex,
+      channelSuggestions,
+      clearChannels,
+      isChannelOpen,
+    ],
   );
 
   return {
