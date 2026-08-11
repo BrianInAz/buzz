@@ -3,16 +3,16 @@
 ## Status
 
 Implemented and validated from base commit `0f7edef101f2` on the isolated
-`fix/ios-peer-presence-hydration` worktree. Source delivery is tracked in pull
-request [#25](https://github.com/BrianInAz/buzz/pull/25). On 2026-08-11 the
-branch was refreshed through signed-off merge commit `e3b5e4cd9c92` from the
-fully verified `origin/main` commit `f73b2bdd5d95`; fresh PR checks and the
-final squash merge remain pending.
+`fix/ios-peer-presence-hydration` worktree. Pull request
+[#25](https://github.com/BrianInAz/buzz/pull/25) was refreshed through
+signed-off merge commit `e3b5e4cd9c92`, passed its hosted gate, and
+squash-merged to `main` on 2026-08-11. Exact-SHA post-merge CI and a final
+merged-build simulator cold launch also passed.
 
 - Beads epic: `ios-buzz-59e`
 - Pull request: [#25](https://github.com/BrianInAz/buzz/pull/25)
 - Verified integration base: `f73b2bdd5d95`
-- Merged commit: pending
+- Merged commit: `79bfb1d9b8615d341d5c478ece710bd3d0685f1a`
 - Acceptance date: 2026-08-10
 - Promotion revalidation date: 2026-08-11
 
@@ -104,6 +104,8 @@ Validation completed before delivery:
 | Mobile file-size policy | Passed |
 | `git diff --check` | Passed |
 | Repository-wide `just ci` | Passed (Hermit-pinned toolchain) |
+| PR #25 hosted Mobile gate | Passed ([run 31538075205](https://github.com/BrianInAz/buzz/actions/runs/31538075205)) |
+| Exact-SHA post-merge CI | Passed ([run 31538899375](https://github.com/BrianInAz/buzz/actions/runs/31538899375)) |
 
 ## Promotion revalidation
 
@@ -140,8 +142,20 @@ evidence for `f73b2bdd5d95` is also green:
   passed. The Docker workflow was correctly path-skipped.
 
 The presence branch then merged that verified `main` without force-pushing or
-resolving conflicts. Fresh PR #25 validation is required before merge; this
-section will record the final PR and post-merge evidence at closeout.
+resolving conflicts. PR #25's hosted gate correctly selected Mobile and
+skipped unrelated Desktop, macOS, and Windows work. After squash merge as
+`79bfb1d9b8615d341d5c478ece710bd3d0685f1a`, exact-SHA promotion completed:
+
+- [CI run 31538899375](https://github.com/BrianInAz/buzz/actions/runs/31538899375)
+  passed the complete 23-job matrix, including Mobile, all four Desktop smoke
+  shards, both Desktop integration shards, macOS, Windows, relay integration,
+  and both Linux cross-compiles;
+- [Sprig run 31538899398](https://github.com/BrianInAz/buzz/actions/runs/31538899398)
+  passed;
+- [Helm run 31538899416](https://github.com/BrianInAz/buzz/actions/runs/31538899416)
+  passed; and
+- [Docker run 31538899411](https://github.com/BrianInAz/buzz/actions/runs/31538899411)
+  was correctly path-skipped.
 
 ## Separate baseline scroll defect
 
@@ -177,6 +191,15 @@ Hermes peers online. The UI was then checked independently:
 |---|---:|---:|---|
 | Cold launch | 5 | 4.282-4.914 s | Both peer dots green in every capture |
 | Background/foreground reconnect | 5 | 4.735-4.765 s | Both peer dots green in every capture |
+
+After merge, the exact `79bfb1d9` debug build replaced only the existing
+worktree-specific simulator app. Two additional secret-safe CLI readings more
+than 35 seconds apart reported both expected peers online. A strict cold-launch
+capture completed in 4.670 seconds with the owner and both peer dots green. An
+earlier visibly green capture that completed in 5.098 seconds was excluded
+from acceptance because it missed the strict timing boundary by 98 ms; the
+second measurement started capture earlier to account for screenshot overhead,
+without waiting for another presence heartbeat.
 
 Cold captures around 4.29 seconds still showed the normal loading skeleton;
 the completed 4.6-second-request captures establish that hydration finishes
