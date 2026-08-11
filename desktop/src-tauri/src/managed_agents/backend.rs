@@ -430,25 +430,19 @@ pub(crate) fn redact_env_values_in(
     redact_secrets_with(s, &values)
 }
 
-/// Copy a resolved provider into a private staging directory while hashing
-/// exactly the bytes copied. The staged file becomes non-writable before either
-/// invocation, closing the path replacement and in-place rewrite races.
-fn stage_provider(
+/// Copy a resolved provider into an unpublished candidate while hashing exactly
+/// the bytes copied. The caller owns the writable handle until publication.
+fn copy_provider_to_candidate(
     binary: &Path,
-) -> Result<(tempfile::TempDir, PathBuf, String, std::fs::File), String> {
-    let directory = tempfile::Builder::new()
-        .prefix("buzz-provider-")
-        .tempdir()
-        .map_err(|error| format!("failed to create provider staging directory: {error}"))?;
-    let suffix = if cfg!(windows) { ".exe" } else { "" };
-    let staged_path = directory.path().join(format!("provider{suffix}"));
+    candidate_path: &Path,
+) -> Result<(std::fs::File, String), String> {
     let mut source = std::fs::File::open(binary)
         .map_err(|error| format!("failed to open provider for staging: {error}"))?;
-    let mut staged = std::fs::OpenOptions::new()
+    let mut candidate = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&staged_path)
-        .map_err(|error| format!("failed to create staged provider: {error}"))?;
+        .open(candidate_path)
+        .map_err(|error| format!("failed to create staged provider candidate: {error}"))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
@@ -458,18 +452,30 @@ fn stage_provider(
         if count == 0 {
             break;
         }
-        staged
+        candidate
             .write_all(&buffer[..count])
-            .map_err(|error| format!("failed to write staged provider: {error}"))?;
+            .map_err(|error| format!("failed to write staged provider candidate: {error}"))?;
         hasher.update(&buffer[..count]);
     }
-    staged
-        .sync_all()
-        .map_err(|error| format!("failed to sync staged provider: {error}"))?;
+    Ok((candidate, hex::encode(hasher.finalize())))
+}
 
-    let mut permissions = staged
+/// Seal and close a provider candidate before atomically publishing the final
+/// executable pathname. Linux can reject execution with `ETXTBSY` when that
+/// pathname has an outstanding writer, even across a very short close/exec
+/// boundary, so the writable pathname is never also the executable pathname.
+fn publish_provider_candidate(
+    candidate_path: &Path,
+    staged_path: &Path,
+    candidate: std::fs::File,
+) -> Result<(), String> {
+    candidate
+        .sync_all()
+        .map_err(|error| format!("failed to sync staged provider candidate: {error}"))?;
+
+    let mut permissions = candidate
         .metadata()
-        .map_err(|error| format!("failed to inspect staged provider: {error}"))?
+        .map_err(|error| format!("failed to inspect staged provider candidate: {error}"))?
         .permissions();
     #[cfg(unix)]
     {
@@ -478,9 +484,29 @@ fn stage_provider(
     }
     #[cfg(not(unix))]
     permissions.set_readonly(true);
-    std::fs::set_permissions(&staged_path, permissions)
-        .map_err(|error| format!("failed to protect staged provider: {error}"))?;
-    drop(staged);
+    std::fs::set_permissions(candidate_path, permissions)
+        .map_err(|error| format!("failed to protect staged provider candidate: {error}"))?;
+    drop(candidate);
+    std::fs::rename(candidate_path, staged_path)
+        .map_err(|error| format!("failed to publish staged provider atomically: {error}"))?;
+    Ok(())
+}
+
+/// Stage one immutable provider executable in a private directory. The final
+/// pathname is published only after the candidate is synced, protected, and
+/// closed; a read-only guard then keeps that inode alive across both calls.
+fn stage_provider(
+    binary: &Path,
+) -> Result<(tempfile::TempDir, PathBuf, String, std::fs::File), String> {
+    let directory = tempfile::Builder::new()
+        .prefix("buzz-provider-")
+        .tempdir()
+        .map_err(|error| format!("failed to create provider staging directory: {error}"))?;
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let staged_path = directory.path().join(format!("provider{suffix}"));
+    let candidate_path = directory.path().join(format!(".provider{suffix}.partial"));
+    let (candidate, digest) = copy_provider_to_candidate(binary, &candidate_path)?;
+    publish_provider_candidate(&candidate_path, &staged_path, candidate)?;
 
     #[cfg(windows)]
     let execution_guard = {
@@ -496,12 +522,7 @@ fn stage_provider(
     let execution_guard = std::fs::File::open(&staged_path);
     let execution_guard = execution_guard
         .map_err(|error| format!("failed to lock staged provider for execution: {error}"))?;
-    Ok((
-        directory,
-        staged_path,
-        hex::encode(hasher.finalize()),
-        execution_guard,
-    ))
+    Ok((directory, staged_path, digest, execution_guard))
 }
 
 /// Deploy through one immutable staged copy: negotiate protocol v1 before the

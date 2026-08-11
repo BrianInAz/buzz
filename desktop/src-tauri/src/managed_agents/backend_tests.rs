@@ -134,6 +134,33 @@ fn env_secrets_from_request_includes_resolved_launch_maps() {
     }
 }
 
+#[test]
+fn provider_candidate_is_unpublished_until_its_writer_is_closed() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source-provider");
+    let candidate = directory.path().join(".provider.partial");
+    let executable = directory.path().join("provider");
+    let bytes = b"provider-bytes";
+    std::fs::write(&source, bytes).unwrap();
+
+    let (writer, digest) = copy_provider_to_candidate(&source, &candidate).unwrap();
+
+    assert!(candidate.exists(), "candidate must exist while writable");
+    assert!(
+        !executable.exists(),
+        "the executable pathname must remain unpublished while the writer is open"
+    );
+    assert_eq!(digest, hex::encode(Sha256::digest(bytes)));
+
+    publish_provider_candidate(&candidate, &executable, writer).unwrap();
+
+    assert!(
+        !candidate.exists(),
+        "atomic publication must consume the candidate"
+    );
+    assert_eq!(std::fs::read(&executable).unwrap(), bytes);
+}
+
 #[cfg(unix)]
 fn write_test_provider(path: &Path, body: &str) {
     use std::os::unix::fs::PermissionsExt;
