@@ -77,6 +77,8 @@ jobs:
         run: scripts/test-release-ref-contract.sh
       - name: Private CA release workflow contract
         run: scripts/test-private-ca-release-contract.sh
+      - name: Sprig rolling release contract
+        run: scripts/test-publish-sprig-rolling-release.sh
       - name: Desktop release candidate contract
         run: scripts/test-desktop-release-candidate.sh
       - name: Mobile release contract

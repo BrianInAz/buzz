@@ -131,19 +131,7 @@ jobs:
       - name: Update rolling release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          TAG="sprig-latest"
-          TITLE="Sprig (rolling)"
-          NOTES="Rolling Linux build of Sprig (all-in-one buzz-acp + buzz-agent + buzz-dev-mcp), tracking \`main\` (\`${SHA}\`)."
-
-          gh release edit "$TAG" \
-            --prerelease \
-            --title "$TITLE" \
-            --notes "$NOTES"
-          gh release upload "$TAG" dist/* --clobber
+        run: scripts/publish-sprig-rolling-release.sh
 
   publish-tag:
     name: Publish tagged release
