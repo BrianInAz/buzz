@@ -4,13 +4,17 @@
 
 Implemented and validated from base commit `0f7edef101f2` on the isolated
 `fix/ios-peer-presence-hydration` worktree. Source delivery is tracked in pull
-request [#25](https://github.com/BrianInAz/buzz/pull/25); the merged commit will
-be recorded after the human-triggered merge.
+request [#25](https://github.com/BrianInAz/buzz/pull/25). On 2026-08-11 the
+branch was refreshed through signed-off merge commit `e3b5e4cd9c92` from the
+fully verified `origin/main` commit `f73b2bdd5d95`; fresh PR checks and the
+final squash merge remain pending.
 
 - Beads epic: `ios-buzz-59e`
 - Pull request: [#25](https://github.com/BrianInAz/buzz/pull/25)
+- Verified integration base: `f73b2bdd5d95`
 - Merged commit: pending
 - Acceptance date: 2026-08-10
+- Promotion revalidation date: 2026-08-11
 
 ## Problem and root cause
 
@@ -101,13 +105,52 @@ Validation completed before delivery:
 | `git diff --check` | Passed |
 | Repository-wide `just ci` | Passed (Hermit-pinned toolchain) |
 
+## Promotion revalidation
+
+The delivery blockers discovered after the first PR publication were fixed as
+separate TDD remediations and promoted independently before this branch was
+refreshed:
+
+- [PR #26](https://github.com/BrianInAz/buzz/pull/26), merged as
+  `ef72743f`, corrected the Desktop path filter so mobile and documentation
+  changes no longer select Desktop through a standalone negative glob.
+- [PR #27](https://github.com/BrianInAz/buzz/pull/27), merged as
+  `594d8cc5`, delivered the separately authorized mobile scroll-anchor fix.
+  It is now supplied by `main`, not as an additional presence-specific change.
+- [PR #29](https://github.com/BrianInAz/buzz/pull/29), merged as
+  `ce5acf44`, made the Sprig rolling publication safely create or update
+  `sprig-latest`.
+- [PR #31](https://github.com/BrianInAz/buzz/pull/31), merged as
+  `ad9e7c31`, brought in the upstream thread-scroll test correction without a
+  local production workaround.
+- [PR #33](https://github.com/BrianInAz/buzz/pull/33), merged as
+  `f73b2bdd`, fixed the pre-existing stale channel-autocomplete Enter race that
+  the corrected Desktop smoke test exposed.
+
+PR #33 passed 14 substantive PR checks, including Desktop Core, all four smoke
+shards, both integration shards, and the macOS build. Exact-SHA post-merge
+evidence for `f73b2bdd5d95` is also green:
+
+- [CI run 31535160441](https://github.com/BrianInAz/buzz/actions/runs/31535160441):
+  passed, including Desktop, mobile, macOS, Windows, relay integration, and
+  both Linux cross-compiles;
+- [Sprig run 31535160539](https://github.com/BrianInAz/buzz/actions/runs/31535160539):
+  passed; and
+- [Helm run 31535160483](https://github.com/BrianInAz/buzz/actions/runs/31535160483):
+  passed. The Docker workflow was correctly path-skipped.
+
+The presence branch then merged that verified `main` without force-pushing or
+resolving conflicts. Fresh PR #25 validation is required before merge; this
+section will record the final PR and post-merge evidence at closeout.
+
 ## Separate baseline scroll defect
 
 The full mobile gate exposed an unrelated failure already present on untouched
 `origin/main`: when follow mode was off and a tall newest message remained
 visible, prepending a live row moved that visible message by 98 points. The
 user separately authorized a TDD remediation under Beads item
-`ios-buzz-59e.7`.
+`ios-buzz-59e.7`; it was promoted independently through PR #27 before this
+presence branch was refreshed.
 
 The message list now records a stable visible-message anchor and restores its
 measured viewport offset after the reversed list inserts a new row. The
