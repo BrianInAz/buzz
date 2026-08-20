@@ -655,7 +655,7 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_hint_is_capped_in_relay_error_message_string() {
-        use crate::relay_admission::MAX_HINT_SECONDS;
+        use crate::relay_admission::{reset_rate_limit_gate, MAX_HINT_SECONDS};
         use std::io::{Read as _, Write as _};
 
         // relay_error_message() arms the process-wide admission gate on 429.
