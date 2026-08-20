@@ -322,7 +322,8 @@ fn reconcile_inbound_persona_event_blocking(
                             ),
                         });
                     }
-                    crate::managed_agents::BackendKind::Provider { .. } => {}
+                    crate::managed_agents::BackendKind::Provider { .. }
+                    | crate::managed_agents::BackendKind::External => {}
                 }
             }
             save_managed_agents(&app, &agents)?;

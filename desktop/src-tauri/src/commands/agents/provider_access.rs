@@ -45,8 +45,8 @@ fn collect_targets_with(
                 config,
                 cached_binary_path: record.provider_binary_path,
             },
-            BackendKind::Local => {
-                unreachable!("provider access reconciliation selected a local agent")
+            BackendKind::Local | BackendKind::External => {
+                unreachable!("provider access reconciliation selected a non-provider agent")
             }
         })
         .collect()

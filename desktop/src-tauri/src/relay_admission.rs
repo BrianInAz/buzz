@@ -104,11 +104,6 @@ pub fn reset_rate_limit_gate() {
     *GATE_EXPIRY.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
-// The gate is process-wide, so every test that can arm it must serialize on
-// the same lock even when that test lives in another module.
-#[cfg(test)]
-static TEST_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 /// RAII boundary for tests outside this module that exercise a path capable of
 /// arming the process-wide gate. It starts clean and clears the gate before
 /// releasing the shared test lock, including when the test unwinds.
