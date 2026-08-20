@@ -5,6 +5,7 @@
 **Intended executor:** Grok 4.6
 **Accountable approver:** BrianInAz
 **Responsible role:** BjzyLabs homelab platform
+**Notion mirror (non-secret):** [Buzz Platform Upgrade to desktop-v0.5.17](https://app.notion.com/p/3c23569aa25581dc83e7ca6ae7e28478) — Git is authoritative if the two drift.
 
 ---
 
@@ -927,10 +928,9 @@ Update these existing pages (do not create duplicates):
 | Buzz Contextual Conversations Fork Canary | `3b23569a-a255-814c-a600-e875c42e905d` | New base SHA, rebased PR refs, promotion state |
 | Upstream Watchlist (database) | `eed01786-2875-4ef5-9fdb-6115924dc62b` | Row for `desktop-v0.5.17`; close the RUSTSEC-2026-0224 watch item |
 | Buzz iOS Peer-Presence Hydration Remediation | `3b83569a-a255-81ab-8970-fbc7ea4dd211` | Mobile status under the B2 decision |
+| **Buzz Platform Upgrade to desktop-v0.5.17** (this plan's mirror, already created) | `3c23569a-a255-81dc-83e7-ca6ae7e28478` | Execution status, evidence links, final acceptance matrix, B2 decision |
 
-Create **one** new page under the Buzz operations hub: *"Buzz Platform Upgrade
-to desktop-v0.5.17"* containing the plan summary, the deviation reconciliation
-table, blocker resolutions, evidence links, and the final acceptance matrix.
+The upgrade page already exists — **update it, do not create a duplicate.**
 Never put secrets or identity material in Notion.
 
 ### 12.3 Beads
