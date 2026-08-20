@@ -2,10 +2,12 @@
 
 **Plan ID:** `BUZZ-UPGRADE-2026-08-19`
 **Authored:** 2026-08-19 (Cursor / Claude Opus 5)
-**Intended executor:** Grok 4.6
+**Reviewed for execution:** 2026-08-19 (Cursor / Grok 4.6) — credential bootstrap, CLI-only delivery, standing decisions, Linux AMD64 build, Hermes `buzz` layer, and AWX launch commands were added so this document is executable without further design.
+**Intended executor:** Grok 4.6 Medium
 **Accountable approver:** BrianInAz
 **Responsible role:** BjzyLabs homelab platform
 **Notion mirror (non-secret):** [Buzz Platform Upgrade to desktop-v0.5.17](https://app.notion.com/p/3c23569aa25581dc83e7ca6ae7e28478) — Git is authoritative if the two drift.
+**Standing authorization:** BrianInAz asked the implementing agent to execute this plan end-to-end by CLI/API. Normal non-force GitFlow (commit, push, PR, merge, `develop`→`main` promotion), AWX launches including Production Buzz JT 215 and Hermes JT 199, Vault pin patches, Harbor publication via the source-controlled publisher, and the scripted desktop install are **already authorized**. Do not stop to re-ask for those. Stop only on a **STOP condition** in this document.
 
 ---
 
@@ -26,14 +28,12 @@ mechanically checkable. Read this section completely before running anything.
 2. **Fail closed.** Every step below has an explicit **STOP condition**. When it
    trips, halt that phase. Do not continue to a later phase that depends on it.
 3. **Evidence or it did not happen.** Every step names the evidence you must
-   capture. Record it as you go (see §8). Never claim a result you did not
+   capture. Record it as you go (closeout is §15). Never claim a result you did not
    observe in command output.
 4. **Verify presence, never print secrets.** You may confirm a Vault field
    exists and is non-empty. You must never echo, log, or copy a secret value,
    private key, token, or identity into chat, files, Git, Beads, Notion, or AWX.
-5. **Human-only actions are explicitly marked** with **[HUMAN]**. There are
-   exactly three of them in this plan (§7.3). Everything else is yours to do by
-   CLI or API. Do not ask the human to run anything not marked **[HUMAN]**.
+5. **No leftover human gates.** There are **zero** `[HUMAN]` wait-for-Brian steps in this plan. Standing decisions are in §0.7. If a credential or capability is missing, **fail fast and report** — do not invent a workaround and do not wait indefinitely for a human to paste values.
 6. **Never destroy client state.** No signing out, no clearing app data, no
    Keychain reset, no identity regeneration, no removing a community, no
    deleting message history. The macOS app upgrade is state-preserving by
@@ -42,6 +42,7 @@ mechanically checkable. Read this section completely before running anything.
    plan references runbooks rather than duplicating them, so the runbook is
    authoritative on procedure detail. If the runbook and this plan conflict,
    stop and report the conflict.
+8. **Read the matching skill before using that tool.** Catalog in §0.4. Skills live under `~/.config/ruler/.ruler/skills/<name>/SKILL.md`. Do not improvise auth; copy the skill's smart-auth pattern.
 
 ### 0.2 Repositories and worktrees
 
@@ -49,7 +50,7 @@ mechanically checkable. Read this section completely before running anything.
 |---|---|---|---|
 | Buzz fork (app source) | `/Users/b/Code/buzz/grok-deploy-new-version` | `origin` = `BrianInAz/buzz`, `upstream` = `block/buzz` | `main` only, no `develop`, no GitFlow guard |
 | Buzz human worktree | `/Users/b/Code/buzz/human` | same | do not use for agent work |
-| Homelab ops (registry, roles, AWX, runbooks) | `/Users/b/Code/homelab-playbooks/<worktree>` | `BjzyLabs/homelab-playbooks` | `develop` → `main`, GitFlow guard **enforced** |
+| Homelab ops (registry, roles, AWX, runbooks) | `/Users/b/Code/homelab-playbooks/grok` | `BjzyLabs/homelab-playbooks` | `develop` → `main`, GitFlow guard **enforced** |
 
 **Branch naming:** the Buzz fork has no GitFlow guard, so the existing branch
 `agent/grok/deploy-new-version` is acceptable there. **homelab-playbooks does
@@ -73,6 +74,130 @@ Hermit provides `cargo`, `cargo-deny`, `just`, `pnpm`, `node`, `flutter`,
 it exists only through Hermit. Python work in homelab-playbooks uses that
 repo's own venv (Critical Rule #7): check `<repo>/.venv`, then `<repo>/venv`,
 and activate before `pip` or `pytest`.
+
+### 0.4 Skills and CLIs (mandatory; mostly already authed)
+
+Read each skill file **before** first use. If a CLI is not authed, follow the skill — **Vault CLI is the credential source of truth**. Never invent tokens, GitHub secrets, or `extra_vars`.
+
+| Domain | Skill | CLI / interface | Auth pattern (fail closed) |
+|---|---|---|---|
+| Vault | `~/.config/ruler/.ruler/skills/vault-cli/SKILL.md` | `vault` | `export VAULT_ADDR=https://vault.bjzy.me:8200`; `vault token lookup`; if fail: `vault login -method=userpass username=$USER` (**never root**) |
+| AWX | `~/.config/ruler/.ruler/skills/awx/SKILL.md` | `awx` **always with `--conf.insecure`** | `awx me --conf.insecure`; if fail: `export TOWER_HOST=https://awx.bjzy.me` and `export TOWER_OAUTH_TOKEN=$(vault kv get -field=api_token kvProd_v2/AWX/API)` then assert `/me` username is `b`. **Do not use `kvProd_v2/AWX/Agents`** — that token cannot launch Production Buzz. |
+| Buzz CLI | `~/.config/ruler/.ruler/skills/buzz/SKILL.md` | `buzz` | Load owner key from Keychain into `BUZZ_PRIVATE_KEY` without echoing (skill snippet). Presence only: `test -n "$BUZZ_PRIVATE_KEY" && echo key=present`. |
+| Beads | `~/.config/ruler/.ruler/skills/beads/SKILL.md` | `bd` | Homelab: `scripts/setup_beads_git_integration.sh --check` then `bd list`. Commands: `bd create`, `bd update --claim`, `bd close`, `bd dep add`. **There is no `bd create-epic` / `bd create-task` on this install** — use `bd create "Epic: …"` then `bd create "<epic-id>.1" "…"`. |
+| Harbor / OCI | `~/.config/ruler/.ruler/skills/skopeo/SKILL.md` + `oras` | `skopeo`, `oras` | Runtime Vault robots. `skopeo inspect --tls-verify=false`. Never log `--creds`. |
+| GitHub | (builtin `gh`) | `gh` | `gh auth status`. Must write `BrianInAz/buzz` and `BjzyLabs/homelab-playbooks`. |
+| GitHub KB (read-only) | `~/.config/ruler/.ruler/skills/github-knowledge-base/SKILL.md` | files under `~/ops/github-knowledge-base` | Optional context. Do not write the KB. |
+| Tailnet | `~/.config/ruler/.ruler/skills/tailnet-acl/SKILL.md` | — | Read-only if a reachability question arises. **Never edit ACLs.** |
+| Token lifecycle | `~/.config/ruler/.ruler/skills/token-lifecycle/SKILL.md` | `vault` + Notion | Only if a new long-lived token is minted. Prefer not to mint; reuse robots. |
+| Notion | Notion MCP (`user-Notion`) | `notion-fetch`, `notion-update-page` | If MCP tools are missing, run tool discovery then retry. Do not skip the Notion mirror. |
+| Grafana / Mimir | `~/.config/ruler/.ruler/skills/use-grafana-mcp/SKILL.md` **or** direct metrics | Prefer `curl` to `http://100.75.115.112:9102/metrics` (prod relay) for baselines. Grafana UI: `https://grafana.bjzy.me/d/buzz-production/buzz-production-overview` |
+| Session closeout | `~/.config/ruler/.ruler/skills/cleanup/SKILL.md` | git | After all delivery boundaries. Do not delete long-lived branches. |
+| Hermes | No dedicated ruler skill. Follow AGENTS.md Hermes section + `docs/runbooks/hermes-*.md` in homelab-playbooks. | AWX JT 198 / 199 | After relay pin is live. Launch with `operation` only — template extra_vars already set `hermes_environment`. |
+
+### 0.5 Exact local paths (do not invent worktrees)
+
+| Repo | Worktree you use | Do not use |
+|---|---|---|
+| Buzz fork | `/Users/b/Code/buzz/grok-deploy-new-version` | `/Users/b/Code/buzz/human` |
+| homelab-playbooks | `/Users/b/Code/homelab-playbooks/grok` | parent `/Users/b/Code/homelab-playbooks` (container only — see `START_HERE.md`), and `human/` |
+
+Homelab GitFlow: `cd /Users/b/Code/homelab-playbooks/grok && git fetch origin && git checkout develop && git pull --ff-only && git checkout -b feature/buzz-upgrade-desktop-v0.5.17`. Verify prefix with `git branch --show-current` before every commit and `gh pr create`. Allowed PR heads: `feature/` `fix/` `chore/` `docs/` `bugfix/` `hotfix/` `codex/` `cursor/` `copilot/` `dependabot/`. **`agent/` is forbidden** on this repo.
+
+### 0.6 Credential bootstrap — run this BEFORE any other phase
+
+Copy this block. If any check fails, **stop the entire plan** and report the failed ID. Do not continue "around" it.
+
+```bash
+set -euo pipefail
+export VAULT_ADDR=https://vault.bjzy.me:8200
+export TOWER_HOST=https://awx.bjzy.me
+
+# C0 Vault session
+if ! vault token lookup >/dev/null 2>&1; then
+  vault login -method=userpass username="$USER"
+fi
+vault token lookup -format=json | jq '{ttl: .data.ttl, policies: .data.policies, display_name: .data.display_name}'
+
+# C1 AWX as operator b (Production launches require this identity)
+export TOWER_OAUTH_TOKEN="$(vault kv get -field=api_token kvProd_v2/AWX/API)"
+awx me --conf.insecure | jq -e '.results[0].username == "b"'
+# STOP if this is "agents" — that identity cannot launch JT 215.
+
+# C2 GitHub
+gh auth status
+gh api user --jq .login
+gh api repos/BrianInAz/buzz --jq '{visibility,fork,parent:.parent.full_name}'
+gh api repos/BjzyLabs/homelab-playbooks --jq .full_name
+
+# C3 Buzz owner identity present (never print)
+export BUZZ_RELAY_URL="https://buzz.bjzy.me"
+export BUZZ_PRIVATE_KEY="$(
+  security find-generic-password -s buzz-desktop -a secrets -w \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["identity"])'
+)"
+test -n "$BUZZ_PRIVATE_KEY" && echo "buzz_owner_key=present" || { echo "buzz_owner_key=MISSING"; exit 1; }
+unset BUZZ_PRIVATE_KEY   # re-load later only when a buzz command needs it
+
+# C4 Docker (required for linux/amd64 relay binaries on this Mac)
+docker version >/dev/null
+docker buildx version >/dev/null
+
+# C5 oras + skopeo
+command -v oras
+command -v skopeo
+```
+
+Then presence-only Vault inventory (keys only, never values):
+
+```bash
+# Required application + pin fields
+vault kv get -format=json kvProd_v2/Buzz/Prod | jq -r '.data.data | keys[]' | sort
+vault kv get -format=json kvProd_v2/Buzz/Development | jq -r '.data.data | keys[]' | sort
+
+# Harbor robots — list the mount, then require Puller plus publisher identities
+vault kv list kvProd_v2/Harbor/
+# Expected at minimum: Buzz-Puller. Discover Buzz-Admin / Buzz-Publisher (or equivalent
+# names) from this list. Record exact path names. STOP if no publisher robot exists.
+for p in Buzz-Puller Buzz-Admin Buzz-Publisher; do
+  if vault kv get -format=json "kvProd_v2/Harbor/$p" >/dev/null 2>&1; then
+    echo "harbor_robot=$p present fields=$(vault kv get -format=json "kvProd_v2/Harbor/$p" | jq -r '.data.data | keys | join(",")')"
+  else
+    echo "harbor_robot=$p MISSING"
+  fi
+done
+
+vault kv get -format=json kvProd_v2/Backups/S3 | jq -r '.data.data | keys[]'
+
+# Write capability probe on pin metadata (non-secret fields). Do not change values yet.
+# If this returns permission denied, STOP — you cannot promote pins.
+vault kv get -format=json kvProd_v2/Buzz/Development | jq -r '.data.metadata.version'
+```
+
+**STOP if:** Vault login fails; AWX `/me` is not `b`; `gh` cannot write both repos; Buzz Keychain identity missing; Docker/buildx missing; `Buzz-Puller` missing; no Harbor publisher robot; Vault denies read on `Buzz/Prod` or `Buzz/Development`.
+
+### 0.7 Standing decisions (locked — do not re-open)
+
+| ID | Decision | Why |
+|---|---|---|
+| D-mobile | Skip iOS/Android install (Option B2-B). Rebase mobile **source** only. | BrianInAz, 2026-08-19. |
+| **D-1-B** | Canonical private-CA implementation is **native-roots feature flag** (fork PRs #17/#22/#23). Do **not** cherry-pick `6d03a38` onto the rebase. Keep `origin/fix/macos-private-ca-websocket` as the upstream contribution vehicle for `block/buzz#3455` only. | This is what `/Applications/Buzz.app` and the Hermes CLI pin already run. Applying both TLS stacks is forbidden. |
+| D-artifact | One Harbor artifact per upgrade SHA containing **four** Linux AMD64 binaries: `buzz-relay`, `buzz-admin`, `buzz-pair-relay`, and `buzz` (CLI). Buzz hosts and Hermes both pin that digest. | Eliminates relay/CLI version skew. Hermes `buzz_binary.yml` installs file `buzz` from the OCI pull. |
+| D-prod | Production AWX launches (JT 215, JT 199) are in scope once Dev certification passes. | User authorized full execution of this plan. |
+
+### 0.8 Execution order (do not skip ahead)
+
+1. Read every skill in §0.4. Copy auth from the skill, not from memory.
+2. Run §0.6 credential bootstrap. Any failed ID stops the entire plan.
+3. Create Beads epic + children (§4.1 B1.5). Claim `$EPIC.1`.
+4. Phase 0 — TDD the Harbor publisher in `homelab-playbooks/grok` on `feature/buzz-upgrade-desktop-v0.5.17` off `develop`. Merge to `develop` before Phase 3 uses it.
+5. Phase 1 — re-verify live state (§5). Read-only.
+6. Phase 2 — rebase `BrianInAz/buzz` from **`origin/main`**, not from this docs-only branch. PR to `BrianInAz/buzz` `main`.
+7. Phase 3 — Docker linux/amd64 extract → publisher `--check` then push → Vault Development pin → GitOps defaults.
+8. Phase 4 — AWX Dev JT 222, then Prod JT 215, then Hermes JT 198 then 199.
+9. Phase 5 — native canary build (scripts already updated to stop cherry-picking A/security) → WSS gate → scripted install → §9.5.
+10. Phase 6 — **do not run.**
+11. Closeout — registry, Notion, Beads, upstream PR hygiene (§12–§15).
 
 ---
 
@@ -105,9 +230,9 @@ upgrade. Do not rebase the two lanes onto different upstream commits.
 | Bundled sidecars in app | `buzz`, `buzz-acp`, `buzz-agent`, `buzz-desktop`, `buzz-dev-mcp`, `git-credential-nostr` | same set, rebuilt | `ls /Applications/Buzz.app/Contents/MacOS/` |
 | Relay — prod `buzz.bjzy.me` | NIP-11 reports `version: 0.2.0` | `0.2.1` | `curl -H 'Accept: application/nostr+json' https://buzz.bjzy.me/ \| jq -r .version` |
 | Relay — dev `devbuzz.bjzy.me` | NIP-11 reports `version: 0.2.0` | `0.2.1` | `curl -H 'Accept: application/nostr+json' https://devbuzz.bjzy.me/ \| jq -r .version` |
-| Relay binary pin (GitOps) | `harbor.bjzy.me/bjzy-custom/buzz-native-bin:nip-ad-ba8826c9-amd64` @ `sha256:e63072f1067567bfa90d62aa75b950f5043e60b85a40b159abeaafae02eddcc7` | new artifact | `rg -n 'buzz_binary_oci' <homelab>/roles/buzz/defaults/main.yml` |
-| Hermes `buzz` CLI pin | `harbor.bjzy.me/bjzy-custom/buzz-native-bin:native-roots-0f7edef1-amd64` @ `sha256:94d31fbc762118e137cbceda70ada3e0391cb54092473417414182245f5656c5` | new artifact | `rg -n 'buzz' <homelab>/roles/hermes/defaults/main.yml` |
-| iOS app on physical iPhone | unmanaged; no governed homelab artifact exists | **see Blocker B2** | §4.2 |
+| Relay binary pin (GitOps) | `harbor.bjzy.me/bjzy-custom/buzz-native-bin:nip-ad-ba8826c9-amd64` @ `sha256:e63072f1067567bfa90d62aa75b950f5043e60b85a40b159abeaafae02eddcc7` | new artifact | `rg -n 'buzz_binary_oci' /Users/b/Code/homelab-playbooks/grok/roles/buzz/defaults/main.yml` |
+| Hermes `buzz` CLI pin | `harbor.bjzy.me/bjzy-custom/buzz-native-bin:native-roots-0f7edef1-amd64` @ `sha256:94d31fbc762118e137cbceda70ada3e0391cb54092473417414182245f5656c5` | new artifact | `rg -n 'hermes_buzz_cli_binary_oci' /Users/b/Code/homelab-playbooks/grok/roles/hermes/defaults/main.yml` |
+| iOS app on physical iPhone | unmanaged; no governed homelab artifact exists | **deferred (D-mobile / B2-B)** | §4.2 — do not install |
 
 **The production relay is running fork code, not upstream code.** The pin tag
 `nip-ad-ba8826c9-amd64` corresponds to fork commit `ba8826c9`, which is part of
@@ -143,7 +268,7 @@ Merge base: `a5dbdf5e61e4c512acd99c219c79c154ddb57295`.
    in the request*. Hermes hosts run a separately pinned `buzz` CLI extracted
    from the same Harbor artifact family. Leaving it behind creates a version
    skew between the agents and the relay they talk to.
-9. iOS/mobile app — **gated by Blocker B2**.
+9. iOS/mobile app — **deferred (D-mobile).** Rebase source only. Do not install.
 10. Deviation registry reconciliation, and the supporting runbooks, tests,
     role defaults, Vault pin metadata, Notion mirrors, and Beads records.
 
@@ -153,7 +278,7 @@ Do **not** deploy these. Each was checked and is not in homelab use:
 
 | Component | Why out of scope |
 |---|---|
-| `web/` and `admin-web/` bundles | The `buzz` Ansible role never sets `BUZZ_WEB_DIR` or an admin web root; native relays are headless. Verify with `rg -n 'BUZZ_WEB_DIR\|admin_web' <homelab>/roles/buzz/` returning no deployment wiring. |
+| `web/` and `admin-web/` bundles | The `buzz` Ansible role never sets `BUZZ_WEB_DIR` or an admin web root; native relays are headless. Verify with `rg -n 'BUZZ_WEB_DIR|admin_web' /Users/b/Code/homelab-playbooks/grok/roles/buzz/` returning no deployment wiring. |
 | `buzz-push-gateway` | No references in homelab-playbooks. APNs push is handled by the upstream-hosted gateway advertised in NIP-11. |
 | `sprig` binary and `buzz-sprig` image | Published by CI only; not installed on any homelab host. |
 | Helm charts (`deploy/charts/*`) | Homelab relays are native systemd, not Kubernetes. |
@@ -174,15 +299,55 @@ The registry snapshot is `2026-08-04T09:13:00Z` and is **stale in two ways**:
 it claims the installed artifact is `v0.5.2` when it is actually the
 `0.5.3-bjzy` fork canary (§1.2), and it omits most of the fork delta (§1.3).
 
+### 3.0 Grouping principle: one deviation per originating fork PR
+
+The registry's five Buzz entries do not line up with how the work was actually
+done. The authoritative grouping is the **fork's own pull requests** — each PR
+was one intended feature or fix. Verified mapping of all 74 commits:
+
+| Fork PR | Branch | Commits | Belongs to |
+|---|---|---|---|
+| #2, #4, #5, #6, #7, #8, #10, #11 | private-CA release automation | 14 | D1 (tooling for it) |
+| #12 | `codex/sync-upstream-main-20260803` | merges only | not a deviation |
+| #13 | `codex/contextual-agent-conversations` | 9 | D3 |
+| #14 | `codex/mobile-persistent-agent-audience` | 1 | D4 |
+| #15 | `codex/desktop-agent-audience-editor` | **17** | D5 |
+| #17, #22, #23 | CLI + desktop native TLS roots | 3 | **D1 (same root cause)** |
+| #20 | `feat/nip-ad-durable-agent-drafts` | **20** | **D6 (new)** |
+| #25, #34 | iOS peer-presence hydration | 2 | D7 (new) |
+| #26, #29 | CI path filter, Sprig rolling release | 2 | D9 (new, CI-only) |
+| #27 | mobile channel scroll anchor | 1 | D7 (new) |
+| #28, #30 | desktop test isolation, atomic provider publish | 2 | D8 (new) |
+| #31 | thread scroll anchor test | 1 | **DROP — now upstream** |
+| #33 | flush stale channel autocomplete before Enter | 1 | D5 (same audience/autocomplete family) |
+| — | obsolete RUSTSEC patch `7dbfcd785` | 1 | D2 → retire |
+
+**Total: 74.** Every fork commit is accounted for, none orphaned. Verify with
+`git cherry -v desktop-v0.5.17 main` and the per-PR extraction in §5.2.
+
+Three grouping corrections this produces, all of which the current registry gets
+wrong:
+
+1. **The Docker `--locked` commits are not their own deviation.** `a6c86d6f0`,
+   `e58fcd8af`, and `95ba0103a` are inside PR #20 — they exist because NIP-AD
+   changed the dependency graph and broke the locked Docker build. They retire
+   with NIP-AD, not independently.
+2. **The private-CA release machinery is not its own deviation.** PRs #2–#11 are
+   the build/CI tooling *for* D1 and already appear in D1's `affected_paths`.
+   They belong inside D1.
+3. **The TLS-trust work is one deviation, not two.** PRs #17, #22, and #23 have
+   the same root cause as the registered private-CA entry and must be folded in
+   (see §3.3, which is a more serious finding).
+
 ### 3.1 Findings — verified against `desktop-v0.5.17`
 
 | Registry ID | Upstream status at `desktop-v0.5.17` | Verdict | Action |
 |---|---|---|---|
-| `buzz-macos-private-ca-v1` | **NOT fixed.** `desktop/src-tauri/src/native_websocket.rs` still calls plain `connect_async` with no platform verifier; `rustls-platform-verifier` is absent from the dependency graph. Upstream issue #2940 and PR #3455 are both still **OPEN**. | Carry forward | Patch `6d03a38da5e3402bf97df1b3c46152887eb3778e` **applies cleanly** to `desktop-v0.5.17` (verified by trial cherry-pick: 5 files auto-merged, zero conflicts). Keep entry `active`, refresh `source_lock` to the new base. |
+| `buzz-macos-private-ca-v1` | **NOT fixed.** `desktop/src-tauri/src/native_websocket.rs` still calls plain `connect_async` with no platform verifier; `rustls-platform-verifier` is absent from the dependency graph. Upstream issue #2940 and PR #3455 both still **OPEN**. | Carry forward, **but rescope** | See §3.3. The registered patch is not the implementation we actually ship. |
 | `buzz-desktop-nostr-signature-verification-v1` | **FIXED UPSTREAM.** `nostr-relay-pool` is **absent from both `Cargo.lock` and `desktop/src-tauri/Cargo.lock`** at `desktop-v0.5.17`. Upstream PR #4139 (`chore(deps): bump nostr-relay-pool for RUSTSEC-2026-0224`) merged 2026-08-01 as `9d6726e5b387310975f5809473ce8372f6fde0dc`; the crate was subsequently removed entirely. | **RETIRE** | Our patch `7dbfcd785be0a9c002863a793c4fbab89a6258c3` now **CONFLICTS** (verified: `UU Cargo.lock`, `UU desktop/src-tauri/Cargo.lock`) and is obsolete. Retire per §5.2. |
-| `buzz-contextual-agent-conversations-v1` | Not upstream. Our PR `block/buzz#4688` is **OPEN**. | Carry forward | Rebase the series; promote `proposed` → `active` only after runtime acceptance. |
-| `buzz-mobile-persistent-agent-audience-v1` | Not upstream. No standalone upstream PR (sequenced behind #4688). | Carry forward | Remains `proposed`. Blocked by B2. |
-| `buzz-desktop-removable-audience-chips-v1` | Not upstream. Our PR `block/buzz#4689` is **OPEN**. | Carry forward | Rebase the series; promote after runtime acceptance. |
+| `buzz-contextual-agent-conversations-v1` | Not upstream. Our PR `block/buzz#4688` is **OPEN**. | Carry forward | Rebase all **9** commits of fork PR #13; promote `proposed` → `active` only after runtime acceptance. |
+| `buzz-mobile-persistent-agent-audience-v1` | Not upstream. No standalone upstream PR (sequenced behind #4688). | Carry source, **do not deploy** | Stays `proposed` / `stale`. Mobile deferred by decision (§4.2). |
+| `buzz-desktop-removable-audience-chips-v1` | Not upstream. Our PR `block/buzz#4689` is **OPEN**. | Carry forward, **rescope** | Registry implies a single merge commit; the real series is **17** commits from fork PR #15 plus `f73b2bdd5` from PR #33. Most are audience-reconciliation stabilization fixes — dropping them re-introduces the send-race bugs they fixed. |
 | `hermes-buzz-presence-lifecycle-v1` | Hermes lane, `certification_state: blocked`. | Out of this plan's mutation scope | After the relay upgrade, re-run the Hermes deviation monitor and record whether relay `0.2.1` changes presence behavior. Do not modify the transform here. |
 | `hermes-openrouter-online-web-search-filter-v1` | Unrelated to Buzz versions. | No action | — |
 
@@ -193,27 +358,89 @@ upstream dropped the vulnerable crate. One additional fork commit
 (`ad9e7c31d`, thread scroll anchor test) has landed upstream and must be
 dropped. Everything else we carry is still ours to carry.
 
-### 3.2 Unregistered deviations that must be registered
+### 3.2 The registered private-CA patch is not what we ship `[LOCKED: D-1-B]`
 
-These are fork-only changes in production use with **no registry entry**. This
-is a registry integrity failure, not a bookkeeping nicety: the SOP's upgrade
-gates cannot protect a deviation nobody recorded. Register each before or
-during Phase 2.
+This is the most serious registry defect found, and it changes how D1 must be
+rebased.
 
-| Proposed ID | What it is | Commits | Where it runs today | Severity |
-|---|---|---|---|---|
-| `buzz-nip-ad-durable-agent-drafts-v1` | NIP-AD durable agent drafts: new event kinds 44300/44301, relay ingest + read gate + FTS exclusion, DB migration `0027_agent_draft_fts.sql`, SDK builders, CLI `drafts` commands, desktop draft store and adoption UI | `384d1525a`, `2400d8473`, `3a00282cb`, `fac7b6cd4`, `699c552eb`, `26252785b`, `113bfa266`, `1be4547a3`, `4ab0eb868`, `1c28f7203`, `e5a57cd5a`, `8447d9c31`, `d31ebe970`, `ba8826c94`, `a61e3b2e1` | **Production relay** (`nip-ad-ba8826c9-amd64`) and prod DB schema | critical-server-feature |
-| `buzz-cli-native-root-wss-trust-v1` | `buzz` CLI uses rustls native roots so WSS to the private CA works | `6e8523101`, `0f7edef10`, `7765d12ec` | **Hermes hosts** (`native-roots-0f7edef1-amd64`) and desktop-bundled CLI | critical-agent-connectivity |
-| `buzz-docker-locked-build-v1` | Relay and push-gateway images build without `--locked` after `cargo chef cook`; refreshed `Cargo.lock` | `a6c86d6f0`, `e58fcd8af`, `95ba0103a` | Image build path feeding the Harbor artifact | build-reproducibility |
-| `buzz-private-ca-release-machinery-v1` | The fork's private-CA build/release automation and its CI guards | `eda5dc91d`, `01c378da9`, `ce82fd3e1`, `3c58f62f2`, `c469d81e7`, `a7c0baa05`, `2f24cb3a0`, `da4bd103c`, `f4065d1b1`, `b5f6b1ba4`, `c81f9fe5b`, `a7faf67d9`, `4c4c8738f`, `f4ea9e39d` | Fork CI | release-tooling |
-| `buzz-desktop-carried-fixes-v1` | Desktop fixes not yet upstream: observer REQ gating, staged provider publication, autocomplete flush, relay admission test isolation | `e0f18f8bc`, `4ff406444`, `f73b2bdd5`, `4deea1a0d`, `8b4dc5048` | Desktop app | client-correctness |
-| `buzz-mobile-carried-fixes-v1` | Mobile channel scroll anchor and peer-presence hydration | `594d8cc5c`, `79bfb1d9b`, `f8e7e0c74` | Mobile source (not deployed — see B2) | mobile-correctness |
-| `buzz-sprig-rolling-release-ci-v1` | Sprig rolling-release CI bootstrap | `ce5acf44c` | Fork CI only | ci-only |
+**There are two different, incompatible implementations of private-CA WSS
+trust in this fork, and the registry documents the one we do not run.**
 
-Registration procedure is in `docs/runbooks/upstream-deviation-management.md`.
-Each entry needs the full schema-v2 field set, and
+**Implementation A — registered in D1, used by the build scripts.**
+Commit `6d03a38da5e3402bf97df1b3c46152887eb3778e`. Adds
+`rustls-platform-verifier`, builds an explicit `Connector::Rustls` via
+`ClientConfig::with_platform_verifier()`, and swaps `connect_async` for
+`connect_async_tls_with_config`. Touches 5 files, ~65 lines of TLS code in
+`native_websocket.rs` plus `commands/pairing.rs` and `huddle/relay_api.rs`.
+**Verified: this commit is NOT an ancestor of fork `main`.** It exists only on
+`origin/fix/macos-private-ca-websocket`. It is the commit that
+`scripts/build-private-ca-macos.sh` and the homelab
+`scripts/build_buzz_fork_canary_macos.sh` cherry-pick onto a base at build time,
+and it is what upstream PR `block/buzz#3455` proposes.
+
+**Implementation B — what fork `main` actually ships.** Fork PRs #17, #22, #23:
+
+- `6e8523101` (#17) — root `Cargo.toml`: `tokio-tungstenite` feature
+  `rustls-tls-webpki-roots` → **`rustls-tls-native-roots`**. Three lines.
+- `7765d12ec` (#22) — same one-line feature swap in
+  `desktop/src-tauri/Cargo.toml`, plus one `#[ignore]`d integration test.
+- `0f7edef10` (#23) — one `#[ignore]`d CLI certification test.
+
+**Implementation B contains no production code change at all** — it is a
+dependency feature flag. Verified on fork `main`: `native_websocket.rs` still
+calls plain `connect_async`, and both `Cargo.toml` files carry
+`features = ["rustls-tls-native-roots"]`.
+
+**What we actually run today is B.** The installed `0.5.3-bjzy` app was built by
+the fork-canary path from fork `main` (receipt `source_sha`
+`f2c5f9476d1db190c5b78f1b7ce0d6ee81bd7a24`), and the production Hermes `buzz`
+CLI pin is literally named `native-roots-0f7edef1-amd64` after `0f7edef10`.
+
+Consequences that must be fixed:
+
+- D1's `implementation.patch_or_transform_reference` points at a commit that is
+  not on fork `main`.
+- D1's `affected_paths` lists `native_websocket.rs`, which is correct for A and
+  wrong for B — B's real paths are the two `Cargo.toml` files and their lockfiles.
+- D1 has **no CLI scope at all**, yet the production Hermes CLI depends on it.
+- The build scripts cherry-pick A on top of a base that may already contain B,
+  layering two TLS mechanisms.
+
+**STOP condition:** do not rebase D1 using both implementations. Canonical choice is **D-1-B** (§0.7). Implementation A stays on `origin/fix/macos-private-ca-websocket` for upstream PR #3455 only. Build scripts must stop cherry-picking `6d03a38`.
+
+### 3.3 Corrected deviation register
+
+Nine entries, replacing the current five. Register or rescope each before
+Phase 2 completes.
+
+| ID | State | What it is | Commits | Runs where | Severity |
+|---|---|---|---|---|---|
+| **D1** `buzz-private-ca-wss-trust-v1` *(rescope of `buzz-macos-private-ca-v1`)* | active | Private-CA WSS trust for desktop **and** CLI (`rustls-tls-native-roots`), plus private-CA build/release machinery as tooling | **B only:** `6e8523101`, `7765d12ec`, `0f7edef10`. Plus machinery listed in §3.0. **Do not carry `6d03a38`.** | Desktop app; `buzz` CLI incl. **Hermes hosts** | critical-client-connectivity |
+| **D2** `buzz-desktop-nostr-signature-verification-v1` | **retire** | Obsolete RUSTSEC-2026-0224 patch | `7dbfcd785` (**is** on fork main — drop it in the rebase) | nowhere after retirement | — |
+| **D3** `buzz-contextual-agent-conversations-v1` | proposed → active on acceptance | Contextual agent conversation routing and reply placement | Fork PR #13, 9 commits: `78458eb84`, `88a1161a7`, `d6978d467`, `300b7b50c`, `bad53924a`, `3796ea4c6`, `af9d56ebc`, `445100d2d`, `ff08ba01d` | Desktop, ACP, mobile policy | client-conversation-routing |
+| **D4** `buzz-mobile-persistent-agent-audience-v1` | stays proposed | Mobile persistent agent audience parity | Fork PR #14: `ac319b30c` | mobile source only — **not deployed** | mobile-conversation-continuity |
+| **D5** `buzz-desktop-removable-audience-chips-v1` | proposed → active on acceptance | Removable persistent-audience chips **and** the audience-reconciliation stabilization series | Fork PR #15, 17 commits: `970f97a3b`, `0d8af4eb3`, `4d8c72bef`, `d7cd9d2dc`, `dc845ae62`, `e222d1884`, `87cba29dd`, `457314295`, `056db6fe7`, `333059ae8`, `8742c8473`, `9df4c9700`, `662e7d5c6`, `8a2ea4624`, `6b24b1751`, `683b826ce`, `2da9629aa`; plus PR #33 `f73b2bdd5` | Desktop | client-audience-control |
+| **D6** `buzz-nip-ad-durable-agent-drafts-v1` **(new)** | active — **unregistered until now** | NIP-AD durable agent drafts and external agent adoption: kinds 44300/44301, relay ingest + read gate + FTS exclusion, migration `0027_agent_draft_fts.sql`, SDK builders, CLI `buzz agents draft-*`, desktop draft store and adoption UI, plus the Docker `--locked` and observer-REQ changes the feature required | Fork PR #20, 20 commits: `384d1525a`, `2400d8473`, `3a00282cb`, `fac7b6cd4`, `699c552eb`, `26252785b`, `113bfa266`, `1be4547a3`, `4ab0eb868`, `1c28f7203`, `e5a57cd5a`, `8447d9c31`, `d31ebe970`, `ba8826c94`, `a61e3b2e1`, `8b4dc5048`, `95ba0103a`, `e0f18f8bc`, `a6c86d6f0`, `e58fcd8af` | **Production relay** (`nip-ad-ba8826c9-amd64`) **and production DB schema** | **critical-server-feature** |
+| **D7** `buzz-mobile-presence-and-scroll-v1` **(new)** | proposed | iOS peer-presence hydration and channel scroll-anchor preservation | Fork PRs #25/#34 `79bfb1d9b`, `f8e7e0c74`; PR #27 `594d8cc5c` | mobile source only — **not deployed** | mobile-correctness |
+| **D8** `buzz-desktop-carried-fixes-v1` **(new)** | active | Atomic staged-provider publication and relay-admission test isolation | PR #30 `4ff406444`; PR #28 `4deea1a0d` | Desktop app | client-correctness |
+| **D9** `buzz-fork-ci-hygiene-v1` **(new)** | active | Fork-only CI: desktop path-filter scope, Sprig rolling-release bootstrap | PR #26 `ef72743fb`; PR #29 `ce5acf44c` | fork CI only | ci-only |
+
+**Dropped, not registered:** `ad9e7c31d` (PR #31) — equivalent patch is upstream
+at `desktop-v0.5.17`. Do not reapply.
+
+D6 is the entry that matters most. It is `critical-server-feature`, it is live
+in production, it owns a database migration, and it had **no registry entry at
+all** — so no upgrade gate has ever protected it. See Blocker B3.
+
+Registration procedure is `docs/runbooks/upstream-deviation-management.md`. Each
+entry needs the full schema-v2 field set, and
 `python3 scripts/validate_upstream_deviations.py --check` plus
 `python3 scripts/render_upstream_deviation_docs.py --check` must pass.
+
+Note that `a7faf67d9` (`fix(ci): certify Buzz security patch series`) exists to
+certify the D2 patch that is being retired. Re-evaluate it during the rebase: if
+its only purpose was the obsolete security commit, retire it with D2 rather than
+carrying it under D1.
 
 ---
 
@@ -243,28 +470,173 @@ production relay binary has no source-controlled producer. **You cannot upgrade
 the relay without re-creating this artifact, and you must not hand-run
 undocumented `oras push` commands to do it.**
 
-**Required resolution — author the publisher as source-controlled code.** Add to
-homelab-playbooks (suggested `scripts/buzz/publish_buzz_native_bin.py` plus
-`docs/runbooks/buzz-native-bin-publisher.md`), TDD-first with unit tests under
-`tests/unit/`, satisfying the boundary runbook exactly:
+**This is Phase 0. Build it before anything else touches the server lane.**
 
-- Runs only on the trusted operator workstation; refuses to run in GitHub Actions.
-- Fetches `Buzz-Admin` and `Buzz-Publisher` from Vault at runtime. Never writes
-  them to disk, logs, or `extra_vars`.
-- Verifies the Harbor immutability rule before pushing.
-- Takes the fork source SHA and the built Linux AMD64 binaries as inputs.
-- Emits `buzz-relay`, `buzz-admin`, `buzz-pair-relay`, `PIN.txt`, `SHA256SUMS`,
-  matching `tests/fixtures/buzz_native_bin_manifest.json`.
-- Tags as `<branch>-<short-sha>-amd64`.
-- Supports `--check` (validate, do not publish).
-- Prints the resulting OCI digest and per-binary SHA-256 for pin promotion.
+#### B1.1 Deliverables
 
-**STOP condition:** if you cannot satisfy the boundary runbook without granting
-GitHub Actions Vault access, exposing Vault publicly, or storing a Harbor
-credential in a GitHub secret — stop. Report that the release boundary needs a
-reviewed network design decision from BrianInAz. Do not build a workaround.
+All in `BjzyLabs/homelab-playbooks`, on a `feature/` branch off `develop`:
 
-### 4.2 B2 — No governed path to install a Buzz build on the physical iPhone `[BLOCKS PHASE 5]`
+| Path | Purpose |
+|---|---|
+| `scripts/buzz/publish_buzz_native_bin.py` | The publisher |
+| `tests/unit/test_publish_buzz_native_bin.py` | Unit tests (written **first**) |
+| `docs/runbooks/buzz-native-bin-publisher.md` | Operator runbook |
+| `tests/fixtures/buzz_native_bin_manifest.json` | Extend for `buzz-pair-relay` |
+| `docs/runbooks/buzz-release-boundary.md` | Update to reference the real script |
+
+#### B1.2 Required behaviour (the contract the tests encode)
+
+1. **Refuses to run in CI.** Exits non-zero if `CI`, `GITHUB_ACTIONS`, or
+   `GITHUB_RUN_ID` is set. The boundary runbook forbids hosted publication
+   because `vault.bjzy.me` is not publicly reachable.
+2. **Refuses to run on a non-operator host.** Requires macOS (`Darwin`) and a
+   reachable `vault.bjzy.me:8200`.
+3. **Runtime-only credentials.** Reads `Buzz-Admin` and `Buzz-Publisher` from
+   Vault at invocation. Never writes them to disk, argv, environment dumps,
+   logs, or `extra_vars`. Redacts them from any traceback.
+4. **Verifies the Harbor immutability rule** for the target repository before
+   pushing, and aborts if the computed tag already exists.
+5. **Inputs:** `--source-sha` (40 hex chars, mandatory), `--source-image` (record `BrianInAz/buzz@<sha>` — **not** a fake `ghcr.io/block/buzz` if you built from the fork), `--binaries-dir`, `--branch`, and `--check`.
+6. **Validates the binaries** before packaging: all four of `buzz-relay`,
+   `buzz-admin`, `buzz-pair-relay`, **`buzz`** (CLI) present, non-empty, ELF x86-64, executable. Hermes `roles/hermes/tasks/buzz_binary.yml` installs the file named `buzz`.
+7. **Tag format** `<branch>-<short-sha>-amd64`, short SHA = first 8 characters.
+8. **Artifact contents:** the four binaries plus `PIN.txt` and `SHA256SUMS`.
+   Update `tests/fixtures/buzz_native_bin_manifest.json` to include the `buzz` layer.
+9. **`--check` performs every validation and pushes nothing.** Verify by
+   asserting the push call is never made.
+10. **Emits a machine-readable pin record** on success — OCI digest, tag,
+    per-binary SHA-256, `source_image`, `source_index_digest`,
+    `source_amd64_manifest_digest` — so §7.4 pin promotion is copy-paste and not
+    transcription by hand.
+11. **Idempotent and fail-closed.** A partial failure leaves no half-published
+    tag; on any error it exits non-zero with the failing stage named.
+
+#### B1.3 TDD sequence — write tests first, in this order
+
+Red → green → refactor, one test at a time. **Do not write the implementation
+before its test fails for the right reason.** Never stub a module into
+`sys.modules`; if a dependency is missing, install it into the repo venv
+(Critical Rule #7 and #2).
+
+| # | Test | Asserts |
+|---|---|---|
+| T1 | `test_refuses_to_run_in_github_actions` | non-zero exit and no Vault call when `GITHUB_ACTIONS=true` |
+| T2 | `test_requires_operator_workstation` | non-zero exit on non-Darwin platform |
+| T3 | `test_rejects_malformed_source_sha` | rejects short, long, and non-hex SHAs |
+| T4 | `test_requires_all_four_binaries` | fails naming the missing binary among `buzz-relay`, `buzz-admin`, `buzz-pair-relay`, `buzz` |
+| T5 | `test_rejects_empty_or_non_elf_binary` | fails on zero-byte and wrong-architecture inputs |
+| T6 | `test_tag_format_matches_branch_shortsha_arch` | `main-abc12345-amd64` for branch `main`, SHA `abc12345…` |
+| T7 | `test_aborts_when_tag_already_exists` | immutability guard trips, no push |
+| T8 | `test_check_mode_validates_but_never_pushes` | push mock never called, exit zero |
+| T9 | `test_artifact_contains_expected_members` | four binaries + `PIN.txt` + `SHA256SUMS`, matching the extended fixture |
+| T10 | `test_sha256sums_match_actual_binaries` | recorded checksums equal recomputed ones |
+| T11 | `test_pin_record_contains_all_promotion_fields` | all seven fields present and well-formed |
+| T12 | `test_secrets_never_appear_in_output_or_logs` | inject sentinel secret values, assert absent from stdout, stderr, log records, and a forced traceback |
+| T13 | `test_partial_failure_leaves_no_published_tag` | simulated mid-push failure triggers cleanup and non-zero exit |
+| T14 | `test_vault_fetch_failure_fails_closed` | Vault unreachable → non-zero, no push, no fallback credential path |
+
+T12 is the one that must never be allowed to go soft. It is the test that keeps
+this script from becoming a credential-leak vector.
+
+#### B1.4 Gates
+
+```bash
+cd /Users/b/Code/homelab-playbooks/grok
+source .venv/bin/activate          # or the repo's existing venv — never system Python
+python3 -m pytest -q tests/unit/test_publish_buzz_native_bin.py
+python3 -m pytest -q tests/unit/test_buzz_release_boundary.py
+python3 -m pytest -q tests/unit/test_buzz_role_contracts.py
+ruff check scripts/buzz/publish_buzz_native_bin.py tests/unit/test_publish_buzz_native_bin.py
+yamllint docs/runbooks/buzz-native-bin-publisher.md docs/runbooks/buzz-release-boundary.md
+```
+
+All green, zero lint violations, before the PR.
+
+#### B1.5 Beads tracking
+
+Progress tracking is mandatory (Critical Rule #6). Prefix `tailscale-vault-of5`,
+JSONL/no-db, sync branch `beads-sync`.
+
+```bash
+cd /Users/b/Code/homelab-playbooks/grok
+scripts/setup_beads_git_integration.sh --check
+
+EPIC="$(bd create "Epic: Buzz platform upgrade to upstream desktop-v0.5.17" -p 0 --json | jq -r '.id')"
+echo "EPIC=$EPIC"
+bd create "$EPIC.1" "Phase 0 credential bootstrap and fail-fast" -p 0
+bd create "$EPIC.2" "Author source-controlled buzz-native-bin publisher TDD T1-T14 (B1)" -p 0
+bd create "$EPIC.3" "Rebase BrianInAz/buzz onto desktop-v0.5.17 (D-1-B)" -p 0
+bd create "$EPIC.4" "Build linux/amd64 binaries and publish Harbor artifact" -p 0
+bd create "$EPIC.5" "Dev then Prod AWX relay install + Hermes CLI pin" -p 0
+bd create "$EPIC.6" "macOS desktop canary build, WSS gate, scripted install" -p 0
+bd create "$EPIC.7" "Registry + Notion + Beads closeout (D2 retire, D6-D9 add)" -p 1
+bd create "$EPIC.8" "Follow-up: Apple Developer Program for mobile canary (deferred)" -p 2
+bd dep add "$EPIC.3" "$EPIC.1"
+bd dep add "$EPIC.4" "$EPIC.2"
+bd dep add "$EPIC.4" "$EPIC.3"
+bd dep add "$EPIC.5" "$EPIC.4"
+bd dep add "$EPIC.6" "$EPIC.3"
+bd update "$EPIC.1" --claim
+```
+
+Record the returned IDs in the closeout. Link the publisher task as a blocker of
+the Phase 3 and Phase 4 tasks so the dependency is explicit in Beads, not just
+in prose. Beads syncs on `beads-sync`, never on the feature branch.
+
+#### B1.6 Stop conditions
+
+- **`Buzz-Publisher` does not exist in Vault.** Then the publishing identity
+  itself is missing, not just the script. Stop and report; do not substitute
+  `Buzz-Admin`, `Buzz-Puller`, or any other robot.
+- **The Harbor repository has no immutability rule.** Stop and report; do not
+  publish into a mutable repository and do not create the rule unilaterally.
+- **You cannot satisfy the boundary runbook** without granting GitHub Actions
+  Vault access, exposing Vault publicly, or putting a Harbor credential in a
+  GitHub secret. Stop. Report that the release boundary needs a reviewed network
+  design decision from BrianInAz. Do not build a workaround.
+
+### 4.2 B2 — Mobile deferred `[RESOLVED — DECIDED 2026-08-19]`
+
+**Decision: BrianInAz elected to skip mobile for this upgrade (Option B2-B).**
+
+This blocker is closed by decision, not by remediation. Accordingly:
+
+- **Do not build, sign, or install any iOS or Android artifact in this plan.**
+  Phase 6 does not run.
+- The iPhone keeps its current app. State that plainly in the closeout.
+- Mobile **source** is still rebased in Phase 2 so the fork stays coherent and
+  the work is not lost: D4 (`ac319b30c`) and D7 (`79bfb1d9b`, `f8e7e0c74`,
+  `594d8cc5c`). Source gates `just mobile-check` and `just mobile-test` must
+  still pass.
+- D4 and D7 stay `proposed` / `stale` in the registry with the deferral recorded
+  in the entry, the Notion mirror, and a Beads follow-up.
+- Do not delete or weaken the mobile deviation entries just because they are not
+  deployed. They document real carried source.
+
+The underlying constraint is unchanged and is recorded here so the follow-up
+does not have to rediscover it:
+
+> The only signing identity on this Mac is `Apple Development:
+> web@briancharbonneau.com`, a personal team expiring **2026-10-03**. There is
+> no Apple Distribution identity, so no TestFlight and no App Store. Zero
+> provisioning profiles are installed. Upstream's only physical-device path is
+> Block's private Buildkite, which the fork cannot trigger. Building the
+> governed mobile canary lane therefore needs a prior decision on **Apple
+> Developer Program enrollment**, since a personal team yields only 7-day
+> development builds.
+
+Create one Beads follow-up for the deferred lane:
+
+```bash
+bd create "$EPIC.8" "Decide Apple Developer Program enrollment for governed mobile canary lane (deferred from desktop-v0.5.17 upgrade)" -p 2
+```
+
+The original analysis is retained below for that follow-up.
+
+<details>
+<summary>Original B2 analysis and options (retained for the deferred follow-up)</summary>
+
+#### B2 — No governed path to install a Buzz build on the physical iPhone
 
 Verified constraints on this Mac:
 
@@ -300,8 +672,11 @@ Present these two options to BrianInAz and wait for a decision:
   documented follow-up. The mobile source fixes still get rebased in Phase 2 so
   the fork stays coherent; they simply are not deployed.
 
-**STOP condition:** do not build or install any iOS artifact until BrianInAz
-selects an option in writing. Record the decision before proceeding.
+**STOP condition (historical):** do not build or install any iOS artifact until
+BrianInAz selects an option in writing. — *Resolved: Option B2-B selected
+2026-08-19.*
+
+</details>
 
 ### 4.3 B3 — NIP-AD is fork-only and is in the production relay `[BLOCKS PHASE 3]`
 
@@ -326,17 +701,18 @@ fork — not from upstream. Additionally:
   upstream migrations at `desktop-v0.5.17`; check for numbering collisions with
   `git ls-tree desktop-v0.5.17 migrations/ --name-only | sort | tail -5`. If a
   collision exists, renumber the fork migration and record it.
-- Register `buzz-nip-ad-durable-agent-drafts-v1` (§3.2) before promotion.
+- Register `buzz-nip-ad-durable-agent-drafts-v1` (§3.3) before promotion.
 
 **STOP condition:** if the NIP-AD relay series cannot be rebased cleanly and the
 conflict resolution is not obviously behaviour-preserving, stop. Do not ship a
 relay that silently drops NIP-AD.
 
-### 4.4 B4 — The deviation registry is incomplete `[BLOCKS PHASE 6 sign-off]`
+### 4.4 B4 — The deviation registry is incomplete `[BLOCKS CLOSEOUT]`
 
-73 fork-only commits versus 5 registry entries (§1.3, §3.2). The registry cannot
-gate what it does not know about. Phase 6 is not complete until every fork-only
-commit is either registered, contributed upstream, or retired with evidence.
+73 fork-only commits versus 5 registry entries (§1.3, §3.3). The registry cannot
+gate what it does not know about. **Final closeout is not complete** until every
+fork-only commit is either registered, contributed upstream, or retired with
+evidence. (Phase 6 is the deferred mobile lane and does not gate this.)
 
 ### 4.5 B5 — The dev AWX surface may not be applied `[BLOCKS PHASE 4 dev-first ordering]`
 
@@ -369,8 +745,8 @@ substitute an alternative.**
 | P1.1 | Fork metadata (gates hosted macOS runners, Critical Rule #10) | `gh api repos/BrianInAz/buzz --jq '{visibility, fork, parent: .parent.full_name}'` | `visibility=public`, `fork=true`, `parent=block/buzz` |
 | P1.2 | GitHub auth and scopes | `gh auth status` | authenticated, can write to `BrianInAz/buzz` |
 | P1.3 | AWX API | `curl -sS -o /dev/null -w '%{http_code}\n' https://awx.bjzy.me/api/v2/ping/` | `200` |
-| P1.4 | AWX CLI authenticated | `awx --conf.host https://awx.bjzy.me job_templates list --name 'Buzz - Manage - Prod' -f human` | returns template 215 |
-| P1.5 | Vault login (userpass, never root) | `export VAULT_ADDR=https://vault.bjzy.me:8200; vault login -method=userpass username=<user>` | token issued |
+| P1.4 | AWX CLI authenticated as `b` | see §0.6 `awx me --conf.insecure` | username `b` |
+| P1.5 | Vault login | see §0.6 (`vault token lookup` then userpass `$USER`) | token issued, never root |
 | P1.6 | Vault Buzz prod fields **present** (do not print values) | `vault kv get -format=json kvProd_v2/Buzz/Prod \| jq -r '.data.data \| keys[]'` | contains `database_password`, `redis_password`, `local_minio_access_key`, `local_minio_secret_key`, `relay_private_key`, `git_hook_hmac_secret`, `restic_password`, `relay_owner_pubkey`, `binary_ref`, `binary_oci_digest`, `buzz_relay_sha256`, `buzz_admin_sha256`, `source_image`, `source_index_digest`, `source_amd64_manifest_digest` |
 | P1.7 | Vault Buzz dev fields present | same for `kvProd_v2/Buzz/Development` | same key set (resolves part of B5) |
 | P1.8 | Harbor robots present | `vault kv get -format=json kvProd_v2/Harbor/Buzz-Puller \| jq -r '.data.data \| keys[]'` and the same for `Buzz-Admin` / `Buzz-Publisher` if they exist | `username`, `password` present; **record whether `Buzz-Publisher` exists at all** — it is required by B1 |
@@ -456,10 +832,12 @@ this worktree had uncommitted modifications to `.gitignore`, `AGENTS.md`,
 Ruler-sync artifacts belonging to the human. **Leave them alone.** Commit only
 files you deliberately change.
 
-Create the working branch:
+Create the working branch from **fork `main`**, not from `agent/grok/deploy-new-version`
+(that branch is docs-only for this plan):
 
 ```bash
-git checkout -b feature/upgrade-desktop-v0.5.17 main
+git fetch origin
+git checkout -b feature/upgrade-desktop-v0.5.17 origin/main
 ```
 
 Record the pre-rebase fork head so rollback is possible:
@@ -490,37 +868,34 @@ Drop it from the series. Then remove its now-dead references:
 - In homelab-playbooks: `scripts/build_buzz_fork_canary_macos.sh` also
   cherry-picks both patches and must be updated in the same delivery.
 
-Reduce all of these to the single private-CA patch. Keep the `deny.toml`
+Reduce all of these to **D-1-B native-roots** (no `SECURITY_PATCH_COMMIT`, no cherry-pick of `6d03a38`). The canary/private-CA build scripts must apply the three native-roots commits or, once they are on the rebased `main`, apply **no extra TLS patch**. Keep the `deny.toml`
 hardening from the security commit **only if** advisory scans still need it;
 verify by running the scans (§6.5) both with and without, and record which.
 
 ### 6.4 Rebase
 
-Rebase the retained series onto `desktop-v0.5.17`. Work in dependency order and
-commit-group at a time so conflicts stay attributable:
+Rebase the retained series onto `desktop-v0.5.17`, **one deviation group at a
+time** using the §3.3 register, so every conflict is attributable to a named
+deviation. Order:
 
-1. Private-CA patch (`6d03a38d`) — verified to apply cleanly.
-2. CLI native-root WSS trust (`6e8523101`, `0f7edef10`, `7765d12ec`).
-3. NIP-AD series (15 commits, §3.2) — highest risk, see B3. Verify the
-   migration numbering before proceeding.
-4. Contextual agent conversation series (`78458eb84` … `2da9629aa`).
-5. Removable audience chips series (`970f97a3b`, `0d8af4eb3`, `4d8c72bef`, and
-   the associated test/fix commits).
-6. Mobile parity and mobile fixes (`ac319b30c`, `bad53924a`, `594d8cc5c`,
-   `79bfb1d9b`, `f8e7e0c74`).
-7. Docker `--locked` build fixes (`a6c86d6f0`, `e58fcd8af`, `95ba0103a`) —
-   **re-evaluate**: these worked around a stale `Cargo.lock`. At
-   `desktop-v0.5.17` the lock may already be consistent, in which case these
-   commits should be retired rather than carried. Test the Docker build both
-   ways and record the evidence.
-8. Private-CA release machinery and CI guards (§3.2), minus the security-patch
-   references removed in §6.3.
-9. Remaining desktop carried fixes (`e0f18f8bc`, `4ff406444`, `f73b2bdd5`,
-   `4deea1a0d`, `8b4dc5048`).
-10. Sprig rolling-release CI (`ce5acf44c`).
+| Order | Deviation | Commits | Notes |
+|---|---|---|---|
+| 1 | **D1** TLS trust | `6e8523101`, `7765d12ec`, `0f7edef10` (**D-1-B only**) | Feature-flag. Do not apply `6d03a38`. |
+| 2 | **D1** machinery | 14 commits | Minus the security-patch references stripped in §6.3; re-evaluate `a7faf67d9`. |
+| 3 | **D6** NIP-AD | 20 commits | **Highest risk — see B3.** Verify migration numbering *first*. The Docker `--locked` commits (`95ba0103a`, `a6c86d6f0`, `e58fcd8af`) are the tail of this group; re-test whether they are still needed at `desktop-v0.5.17` and retire them within D6 if the lock is now consistent. |
+| 4 | **D3** contextual conversations | 9 commits (PR #13) | |
+| 5 | **D5** audience chips | 17 commits (PR #15) + `f73b2bdd5` (PR #33) | Apply the full series. The stabilization fixes are load-bearing — dropping them re-introduces send-race bugs. |
+| 6 | **D4** mobile audience | `ac319b30c` | Source only; not deployed (§4.2). |
+| 7 | **D7** mobile presence/scroll | `79bfb1d9b`, `f8e7e0c74`, `594d8cc5c` | Source only; not deployed. |
+| 8 | **D8** desktop carried fixes | `4ff406444`, `4deea1a0d` | |
+| 9 | **D9** fork CI | `ef72743fb`, `ce5acf44c` | |
+
+Excluded deliberately: `7dbfcd785` (D2, obsolete — §6.3) and `ad9e7c31d`
+(upstream now — §6.2).
 
 For each group record: commits applied, conflicts encountered, how each conflict
-was resolved, and why the resolution preserves behaviour.
+was resolved, and why the resolution preserves behaviour. Verify the group
+totals against §3.0 so nothing is silently dropped.
 
 **STOP conditions:**
 - A conflict whose correct resolution is not clear from the surrounding code.
@@ -556,8 +931,8 @@ pnpm -C desktop build
 just mobile-check
 just mobile-test
 
-# Formatting/lint across the repo
-just fix-all   # then confirm it produced no diff
+# Formatting/lint — check only. Do not run `just fix-all` as a gate (it rewrites the tree).
+cargo fmt --check
 git diff --exit-code
 ```
 
@@ -606,13 +981,15 @@ the source SHA for Phases 3 and 4.
 ### 7.1 Establish real AWX and dev state (resolves B5)
 
 ```bash
-AWX=https://awx.bjzy.me
-awx --conf.host $AWX job_templates get 215 -f json   # Buzz - Manage - Prod
-awx --conf.host $AWX job_templates get 222 -f json   # Buzz - Manage - Dev
-awx --conf.host $AWX job_templates get 216 -f json   # Buzz - Configure HAProxy Routing (Prod)
-awx --conf.host $AWX job_templates get 223 -f json   # Buzz - Configure HAProxy Routing (Dev)
-awx --conf.host $AWX projects get 8   -f json        # Home Lab Ansible - Production
-awx --conf.host $AWX schedules list --job_template 215 -f human
+export TOWER_HOST=https://awx.bjzy.me
+export TOWER_OAUTH_TOKEN="$(vault kv get -field=api_token kvProd_v2/AWX/API)"
+awx me --conf.insecure | jq -e '.results[0].username == "b"'
+
+# Discover live IDs (do not trust this doc if they drifted)
+awx job_templates list --page_size 200 --conf.insecure \
+  | jq -r '.results[] | select(.name|test("Buzz|Hermes - Manage")) | "\(.id)\t\(.name)\tinv=\(.inventory)\tlimit=\(.limit)"'
+
+# Expected at authoring: 215 Prod, 222 Dev, 216 HAProxy Prod, 223 HAProxy Dev, 198 Hermes Dev, 199 Hermes Prod
 ```
 
 Record: template existence, project/inventory/playbook/limit, current SCM
@@ -621,39 +998,98 @@ revision, survey spec, schedule IDs 50/51 and their `next_run`. Compare against
 surface is genuinely unapplied, apply it with `awx/devbuzz/apply.sh` as a
 prerequisite and record the result.
 
-### 7.2 Build and publish the artifact
+### 7.2 Build Linux AMD64 binaries on this Mac, then publish
 
-1. Build the Linux AMD64 server binaries from the **merged fork SHA** from §6.6
-   (not upstream), producing `buzz-relay`, `buzz-admin`, `buzz-pair-relay`.
-2. Publish with the **new source-controlled publisher from B1**, in `--check`
-   mode first, then for real.
-3. Record: source SHA, `source_image`, `source_index_digest`,
-   `source_amd64_manifest_digest`, resulting Harbor tag
-   (`<branch>-<short-sha>-amd64`), OCI manifest digest, and the SHA-256 of each
-   of the three binaries.
+This Mac is arm64. **Do not cross-compile with a guessed cargo target.** Use Docker `linux/amd64` against the **merged fork SHA** from §6.6.
 
-Note the existing pin does **not** record a `buzz_pair_relay_binary_sha256`
-(`roles/buzz/defaults/main.yml` has it empty). Populate it in this delivery so
-the pair-relay sidecar gets the same integrity guarantee as the other two
-binaries, and extend the role's verification and its unit test accordingly.
+```bash
+cd /Users/b/Code/buzz/grok-deploy-new-version
+source ./bin/activate-hermit
+SHA="$(git rev-parse HEAD)"          # must equal the merged fork SHA
+test "$(git rev-parse --abbrev-ref HEAD)" = "main"
 
-### 7.3 Human-gated actions **[HUMAN]**
+OUT="/tmp/buzz-native-bin-$SHA"
+rm -rf "$OUT" && mkdir -p "$OUT"
 
-Exactly three actions in this entire plan require the human. Batch them into a
-single request; do not spread them out.
+docker buildx build --platform linux/amd64 --load \
+  --target stripped-binaries \
+  -t "buzz-native-src:$SHA" \
+  -f Dockerfile .
 
-1. **[HUMAN] Vault pin promotion values.** If your Vault token lacks write
-   capability on `kvProd_v2/Buzz/*`, you must not acquire one by another route.
-   Provide BrianInAz the exact non-secret field/value pairs to set
-   (`binary_ref`, `binary_oci_digest`, `buzz_relay_sha256`, `buzz_admin_sha256`,
-   `buzz_pair_relay_sha256`, `source_image`, `source_index_digest`,
-   `source_amd64_manifest_digest`), Development first, then Prod. If your token
-   *does* have write capability, do it yourself via `vault kv patch` and record
-   the version numbers.
-2. **[HUMAN] B2 mobile decision** (§4.2) — Option B2-A or B2-B.
-3. **[HUMAN] Drag the built `Buzz.app` to Applications** if, and only if, the
-   scripted state-preserving install in §9.3 is unavailable. The scripted path
-   is preferred and is fully automatable; prefer it.
+CID="$(docker create --platform linux/amd64 "buzz-native-src:$SHA")"
+docker cp "$CID:/build/target/release/buzz-relay"      "$OUT/buzz-relay"
+docker cp "$CID:/build/target/release/buzz-admin"      "$OUT/buzz-admin"
+docker cp "$CID:/build/target/release/buzz-pair-relay" "$OUT/buzz-pair-relay"
+docker cp "$CID:/build/target/release/buzz"            "$OUT/buzz"
+docker rm "$CID"
+
+file "$OUT"/* | grep -E 'ELF 64-bit LSB.+, x86-64'   # STOP if not ELF x86-64
+chmod 0755 "$OUT"/*
+```
+
+If `buzz` is not at `target/release/buzz` in the stripped stage, **extend the Dockerfile in the same Phase 2 PR**. Current lines 73–82 only build three binaries. Required edit:
+
+```dockerfile
+RUN cargo build --release -p buzz-relay --bin buzz-relay \
+                                   -p buzz-admin --bin buzz-admin \
+                                   -p buzz-pair-relay --bin buzz-pair-relay \
+                                   -p buzz-cli --bin buzz
+# in stripped-binaries:
+RUN strip target/release/buzz-relay \
+    && strip target/release/buzz-admin \
+    && strip target/release/buzz-pair-relay \
+    && strip target/release/buzz
+```
+
+Also add `COPY` of `buzz` in the `runtime` and `runtime-debug` stages so the image stays consistent. Tests: the image still builds and `file` reports ELF x86-64 for all four. This is required by D-artifact (§0.7), not optional.
+
+Then publish:
+
+```bash
+cd /Users/b/Code/homelab-playbooks/grok
+source .venv/bin/activate   # or venv per Critical Rule #7
+python3 scripts/buzz/publish_buzz_native_bin.py --check \
+  --source-sha "$SHA" \
+  --source-image "BrianInAz/buzz@$SHA" \
+  --binaries-dir "$OUT" \
+  --branch main
+python3 scripts/buzz/publish_buzz_native_bin.py \
+  --source-sha "$SHA" \
+  --source-image "BrianInAz/buzz@$SHA" \
+  --binaries-dir "$OUT" \
+  --branch main
+# Capture the printed pin JSON (digest, tag, four sha256s). Never print Harbor passwords.
+```
+
+Record: source SHA, Harbor tag, OCI digest, four binary SHA-256s. `source_image` is the fork SHA, **not** `ghcr.io/block/buzz:main`.
+
+Populate `buzz_pair_relay_binary_sha256` (currently empty in role defaults) **and** `hermes_buzz_cli_binary_sha256` from the same pin record.
+
+### 7.3 Vault pin write (agent, fail-fast)
+
+No human paste-handoff. After the publisher emits the pin JSON:
+
+```bash
+# Presence-only probe already ran in §0.6. Patch non-secret pin fields.
+# STOP on permission denied — do not route around via extra_vars or a second secret path.
+PIN_JSON=...  # from publisher stdout file, not chat
+
+vault kv patch kvProd_v2/Buzz/Development \
+  binary_ref="$TAG" \
+  binary_oci_digest="$DIGEST" \
+  buzz_relay_sha256="$RELAY_SHA" \
+  buzz_admin_sha256="$ADMIN_SHA" \
+  buzz_pair_relay_sha256="$PAIR_SHA" \
+  source_image="BrianInAz/buzz@$SHA" \
+  source_index_digest="" \
+  source_amd64_manifest_digest=""
+
+# Repeat for kvProd_v2/Buzz/Prod ONLY after Dev AWX install+test in §8.1 succeeds.
+```
+
+Record new Vault versions (`vault kv metadata get`) — never field values that are secrets. Pin fields above are checksums and refs, not credentials.
+
+If `vault kv patch` is denied, report the token policies from `vault token lookup` and stop. That is a capability gap, not a prompt for Brian to type the pins by hand as a workaround.
 
 ### 7.4 GitOps pin promotion
 
@@ -663,11 +1099,14 @@ On a `feature/` branch off `develop` in homelab-playbooks:
   `buzz_binary_oci_digest`, `buzz_relay_binary_sha256`,
   `buzz_admin_binary_sha256`, `buzz_pair_relay_binary_sha256`.
 - `tests/fixtures/buzz_native_bin_manifest.json`.
-- `roles/hermes/defaults/main.yml` — the Hermes `buzz` CLI pin (§2.1 item 8).
+- `roles/hermes/defaults/main.yml` — all three pin fields:
+  `hermes_buzz_cli_binary_oci_ref`, `hermes_buzz_cli_binary_oci_digest`,
+  `hermes_buzz_cli_binary_sha256`. Hermes does **not** store this pin in Vault;
+  GitOps is the source of truth.
 - `docs/runbooks/buzz-hermes-version-pinning.md` — the authoritative version record.
 - New publisher script + runbook from B1.
-- Registry updates from §3 (retire D2, refresh D1/D3/D5 `source_lock`, add the
-  §3.2 entries).
+- Registry updates from §3.3 (retire D2, refresh D1/D3/D5 `source_lock`, add
+  D6–D9).
 
 Then:
 
@@ -699,11 +1138,29 @@ hosts.**
 
 ### 8.1 Dev certification (host `devbuzz`, template 222)
 
-1. Capture baseline metrics before touching anything.
-2. `operation=backup`.
-3. `operation=status` and `operation=test` — record pre-state.
-4. `operation=install` — picks up the new pin.
-5. `operation=status`, `operation=test`.
+Launch pattern (copy per operation; extra_vars must contain **only** survey fields):
+
+```bash
+launch_buzz() {
+  local jt="$1" op="$2"
+  awx job_templates launch "$jt" --conf.insecure --monitor \
+    --extra_vars "{\"operation\":\"${op}\",\"restore_selector\":\"latest\"}"
+}
+
+# §8.1 Dev (JT 222). Sync Development project 136 to the promoted develop SHA first.
+DEV_JT=222
+PROJECT_ID=$(awx job_templates get "$DEV_JT" --conf.insecure | jq -r '.project')
+awx projects get "$PROJECT_ID" --conf.insecure | jq '{name,status,scm_branch,scm_revision}'
+awx projects update "$PROJECT_ID" --conf.insecure --wait
+awx job_templates get "$DEV_JT" --conf.insecure | jq '{id,name,inventory,limit,playbook}'
+
+launch_buzz "$DEV_JT" backup
+launch_buzz "$DEV_JT" status
+launch_buzz "$DEV_JT" test
+launch_buzz "$DEV_JT" install
+launch_buzz "$DEV_JT" status
+launch_buzz "$DEV_JT" test
+```
 6. Verify `curl -H 'Accept: application/nostr+json' https://devbuzz.bjzy.me/ | jq -r .version` → `0.2.1`.
 7. Verify pair-relay: `jq -r .pairing_relay_url` from the same NIP-11 payload, and that `https://devbuzz.bjzy.me/pair` upgrades to a WebSocket.
 8. Verify NIP-AD survived: kinds 44300/44301 still accepted, drafts publish and resolve via the `buzz` CLI against dev.
@@ -726,15 +1183,22 @@ amtool silence add \
   'source=mimir' 'tenant=Bjzy.Labs' 'environment=production'
 ```
 
-Baselines to capture before and compare after — these must **not decrease**:
-`sum(buzz_community_messages)`, `sum(buzz_community_channels)`,
-`sum(buzz_community_workflows)`, `sum(buzz_total_subscriptions)`,
-`sum(buzz_total_relay_members)`, `sum(buzz_total_storage_objects)`,
-`sum(buzz_total_storage_bytes)`.
+Baselines — scrape the relay metrics port (do not skip TLS on the public edge; this is the Tailnet metrics listener documented in `buzz-ops-closeout.md`):
 
-Sequence: `backup` → `status` → `test` → `install` → `status` → `test` →
-readiness and metrics verification → historical-total comparison → remove the
-silence.
+```bash
+curl -sS http://100.75.115.112:9102/metrics | tee /tmp/buzz-prod-metrics-before.txt \
+  | rg '^(buzz_community_messages|buzz_community_channels|buzz_community_workflows|buzz_total_subscriptions|buzz_total_relay_members|buzz_total_storage_objects|buzz_total_storage_bytes) '
+```
+
+These must **not decrease** after install. Re-scrape to `/tmp/buzz-prod-metrics-after.txt` and diff.
+
+Sequence using the same `launch_buzz 215 …` helper after **Production project 8** is synced to promoted `main` (webhook may already have done this — verify `scm_revision` before `projects update`):
+
+`backup` → `status` → `test` → `install` → `status` → `test` →
+readiness and metrics verification → historical-total comparison → expire the
+silence (`amtool silence expire <id>` or equivalent).
+
+**Prod JT 215 inventory is the Buzz prod host, not swarm inventory 15.** Still treat it as production: verify `awx job_templates get 215 --conf.insecure | jq '{name,inventory,limit}'` shows name `Buzz - Manage - Prod` and limit `buzz` before launch. Standing authorization is in the plan header.
 
 Post-install verification:
 - `curl -sk https://buzz.bjzy.me/_readiness` → `200` and `ready`.
@@ -753,11 +1217,25 @@ Post-install verification:
 
 ### 8.3 Hermes CLI pin rollout
 
-After the relay is accepted, roll the Hermes `buzz` CLI pin through the Hermes
-AWX templates (dev 198 first, then prod) so agents and relay match. Verify
-Hermes Buzz presence still works — online, heartbeat, graceful offline,
-reconnect, message delivery — and re-run the Hermes runtime deviation monitor.
-Record whether `hermes-buzz-presence-lifecycle-v1` classification changed.
+```bash
+# Hermes templates already pin hermes_environment in extra_vars
+# (198 → Development, 199 → Production). Launch with operation only.
+# Dump first: awx job_templates get 198 --conf.insecure | jq '{name,extra_vars,survey_spec,project}'
+# Sync 198's project (136 / develop) then 199's project (8 / main) before install.
+awx job_templates launch 198 --conf.insecure --monitor \
+  --extra_vars '{"operation":"install"}'
+awx job_templates launch 198 --conf.insecure --monitor \
+  --extra_vars '{"operation":"status"}'
+awx job_templates launch 199 --conf.insecure --monitor \
+  --extra_vars '{"operation":"install"}'
+awx job_templates launch 199 --conf.insecure --monitor \
+  --extra_vars '{"operation":"status"}'
+```
+
+Verify Hermes Buzz presence still works — online, heartbeat, graceful offline,
+reconnect, message delivery — and re-run the Hermes runtime deviation monitor
+workflow. Record whether `hermes-buzz-presence-lifecycle-v1` classification changed.
+On the Hermes host, `sha256sum /home/b/.hermes/bin/buzz` must equal the new pin.
 
 ---
 
@@ -766,10 +1244,11 @@ Record whether `hermes-buzz-presence-lifecycle-v1` classification changed.
 ### 9.1 Build
 
 Use the fork's native Apple Silicon canary builder against the **merged fork
-SHA** from §6.6, updated in §6.3 to a single-patch series:
+SHA** from §6.6. After D-1-B, that SHA already contains native-roots; the builder
+must **not** cherry-pick `6d03a38` or `7dbfcd78`. Update `scripts/build_buzz_fork_canary_macos.sh` in the homelab PR **before** running it.
 
 ```bash
-cd /Users/b/Code/homelab-playbooks/<worktree>
+cd /Users/b/Code/homelab-playbooks/grok
 source /Users/b/Code/buzz/grok-deploy-new-version/bin/activate-hermit
 scripts/build_buzz_fork_canary_macos.sh <merged-fork-sha> \
   "/Users/b/Downloads/Buzz Upgrade v0.5.17/<sha12>"
@@ -813,9 +1292,9 @@ archives the current app to `/Users/b/Applications/Buzz Rollback/<receipt-dir>/`
 installs the new bundle, writes `INSTALL-RECEIPT.json`, and launches it. It does
 not touch identity, Keychain, Application Support, or history.
 
-Because this is fully scripted, **the human does not need to drag anything**.
-Only fall back to **[HUMAN]** drag-to-Applications if this script fails, and
-report why it failed.
+Because this is fully scripted, **do not wait for a drag-to-Applications step**.
+If `install_buzz_fork_canary_macos.sh` fails, **STOP**, keep the current app, and
+report the script error. Do not ask the human to copy the bundle by hand.
 
 ### 9.4 CLI verification
 
@@ -825,43 +1304,68 @@ automatically. Confirm the symlink still resolves and the CLI runs:
 ```bash
 ls -la /Users/b/.local/bin/buzz
 buzz --help
-buzz drafts --help      # NIP-AD surface must still exist
+buzz agents --help      # NIP-AD / draft surface must still exist
 ```
 
-### 9.5 Runtime acceptance
+### 9.5 Runtime acceptance (CLI + existing tests — no GUI babysitting)
 
-All must pass on the installed artifact. Record each:
+Do **not** sit in the Desktop UI looking for chips. Prove the same contracts from CLI and the repo's tests.
 
-- Identity reused; owner status intact; no re-auth prompt.
-- Connects to `wss://buzz.bjzy.me` over the private CA (validates D1).
-- History present and complete.
-- Send and receive work.
-- Contextual agent conversations: single-agent replies flat, multi-agent in
-  shared threads (validates D3).
-- Persistent audience chips render by name; draft-local and persistent removal;
-  mention hydration removal; `@mention` re-addition (validates D5).
-- NIP-AD drafts publish, list, and resolve.
-- Full quit → relaunch → reconnect → history restored.
+```bash
+# Identity (owner key from Keychain — buzz skill; never print)
+export BUZZ_RELAY_URL="https://buzz.bjzy.me"
+export BUZZ_PRIVATE_KEY="$(
+  security find-generic-password -s buzz-desktop -a secrets -w \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["identity"])'
+)"
+buzz --format compact users get | python3 -c 'import json,sys; d=json.load(sys.stdin); print("display="+str(d[0].get("display_name")))'
 
-**STOP condition:** any acceptance item fails → roll back per §11, keep the
-registry entries un-promoted, and report.
+# Private-CA WSS (same gate the ignored unit tests use)
+export BUZZ_TEST_WSS_URL="wss://buzz.bjzy.me"
+cd /Users/b/Code/buzz/grok-deploy-new-version && source ./bin/activate-hermit
+cargo test -p buzz-cli -- --ignored configured_wss_trusts_native_platform_roots --exact --nocapture
+
+# Send/receive
+HOME_CH="8dcbf11a-9025-4bb2-89a3-2765958309cd"   # production agent-control
+buzz messages send --channel "$HOME_CH" --content "upgrade-canary $(date -u +%Y%m%dT%H%M%SZ)"
+buzz messages get --channel "$HOME_CH" --limit 5 --kinds 9
+
+# NIP-AD / agent-draft surface (subcommand names follow live CLI --help)
+buzz --help | rg -i 'draft|agent'
+buzz agents --help
+
+# Installed bundle
+/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /Applications/Buzz.app/Contents/Info.plist
+ls /Applications/Buzz.app/Contents/MacOS/
+
+# Desktop contracts already in-tree (no GUI babysitting, no grep fallback)
+cd /Users/b/Code/buzz/grok-deploy-new-version/desktop
+pnpm exec playwright test tests/e2e/persistent-agent-audience.spec.ts
+pnpm test -- src/features/channels/lib/contextualAgentConversationPolicy.test.mjs
+```
+
+Also required: private WSS gate from §9.2 green; app launches (`open -a Buzz`) and `pgrep -lf Buzz.app` is non-empty; after `osascript -e 'quit app "Buzz"'` and relaunch, `buzz users get` still succeeds (identity reuse).
+
+**STOP condition:** any command above fails → roll back per §11, keep registry entries un-promoted, report.
 
 ---
 
-## 10. Phase 6 — iOS / mobile
+## 10. Phase 6 — iOS / mobile: DEFERRED, DOES NOT RUN
 
-**Entirely gated by B2 (§4.2). Do not start until BrianInAz has chosen an
-option.**
+**BrianInAz elected Option B2-B on 2026-08-19. This phase does not execute.**
 
-- **If B2-A:** deliver the governed mobile canary lane (build script, device
-  install/rollback script, runbook, registry entry, tests) and only then build,
-  install to `MyPhone`, and run cross-client acceptance: identity preservation,
-  persistent audience, thread isolation, explicit mentions, failure behaviour,
-  mentions-only mode, and continuity against the upgraded relay.
-- **If B2-B:** do not build or install any iOS artifact. Keep
-  `buzz-mobile-persistent-agent-audience-v1` at `proposed` / `stale`, record the
-  deferral in the registry, Notion, and Beads with a named follow-up, and state
-  plainly in the final report that the iPhone still runs its previous app.
+Do not build, sign, or install any iOS or Android artifact. Instead:
+
+1. Confirm the mobile **source** groups D4 and D7 rebased in Phase 2 and that
+   `just mobile-check` and `just mobile-test` passed.
+2. Keep D4 and D7 at `proposed` / `stale`, with the deferral and its reason
+   recorded in each registry entry.
+3. Record the Apple Developer Program follow-up in Beads (§4.2).
+4. State plainly in the closeout that **the iPhone still runs its previous app
+   and was intentionally not touched.**
+
+Do not treat the deferral as an invitation to do a "quick" development-signed
+install. That is exactly the workaround this plan forbids.
 
 ---
 
@@ -890,25 +1394,29 @@ the SOP requires.
 **Buzz fork** (`BrianInAz/buzz`):
 - This plan (already committed).
 - Rebased series on `main` via the Phase 2 PR.
-- `docs/operations/private-ca-desktop-release-lifecycle.md` updated to the
-  single-patch series.
+- `docs/operations/private-ca-desktop-release-lifecycle.md` updated to
+  **D-1-B native-roots** (no extra TLS cherry-pick, no `SECURITY_PATCH_COMMIT`).
 - `.github/workflows/private-ca-release.yml` and
   `scripts/build-private-ca-macos.sh` with the obsolete `SECURITY_PATCH_COMMIT`
-  removed.
+  and `6d03a38` cherry-pick removed.
 - If NIP-AD is renumbered, the migration and its references.
 
 **homelab-playbooks** (`BjzyLabs/homelab-playbooks`, `feature/` → `develop` → `main`):
-- `docs/upstream-deviations.json` — retire D2; refresh D1/D3/D4/D5 `source_lock`
-  to the new base; add the seven §3.2 entries; update `snapshot_utc`.
+- `docs/upstream-deviations.json` — implement the corrected nine-entry register
+  from §3.3: retire D2 as a tombstone; **rescope D1** per decision D-1-B
+  including its CLI scope and the machinery paths; correct D5's commit series to
+  the full 17 + `f73b2bdd5`; add **D6, D7, D8, D9**; refresh every
+  `source_lock` to `c3bfd669`; record the mobile deferral on D4 and D7; update
+  `snapshot_utc`.
 - `docs/current-upstream-deviations.md` — regenerated, never hand-edited.
-- New: `scripts/buzz/publish_buzz_native_bin.py` and
-  `docs/runbooks/buzz-native-bin-publisher.md` (B1).
+- New: `scripts/buzz/publish_buzz_native_bin.py`,
+  `tests/unit/test_publish_buzz_native_bin.py`, and
+  `docs/runbooks/buzz-native-bin-publisher.md` (B1, §4.1).
 - `roles/buzz/defaults/main.yml`, `roles/hermes/defaults/main.yml`,
   `tests/fixtures/buzz_native_bin_manifest.json` — new pins.
 - `docs/runbooks/buzz-hermes-version-pinning.md` — new authoritative versions.
-- `scripts/build_buzz_fork_canary_macos.sh` — single-patch series.
+- `scripts/build_buzz_fork_canary_macos.sh` — stop cherry-picking `6d03a38` and `7dbfcd785`.
 - `docs/evidence/buzz-upgrade-v0.5.17-<date>.md` — full evidence record.
-- If B2-A: the mobile canary lane files.
 - New/updated unit tests for every contract changed.
 
 Before declaring done: `git status --short --branch` in both repos, classify
@@ -965,17 +1473,17 @@ Phase-by-phase. Every row needs recorded evidence.
 
 | # | Criterion |
 |---|---|
-| 1 | Phase 1 checks all pass, or a failure is reported as a blocker. |
-| 2 | Fork `main` rebased onto `c3bfd66947978fae93f4cfb46bea98ba20e32ccf`; obsolete security patch and `ad9e7c31d` removed; all §6.5 gates green; PR merged. |
-| 3 | Source-controlled Harbor publisher exists, is tested, and is merged (B1 cleared). |
-| 4 | New `buzz-native-bin` artifact published; digest and all three binary checksums recorded; pins promoted in Git and Vault. |
+| 1 | §0.6 credential bootstrap passed. Phase 1 checks all pass, or a failure is reported as a blocker. D-1-B is locked in this document — do not wait for another decision. |
+| 2 | Fork `main` rebased onto `c3bfd66947978fae93f4cfb46bea98ba20e32ccf`, group by group per §6.4; obsolete security patch and `ad9e7c31d` removed; group totals reconcile to §3.0 with no orphaned commit; all §6.5 gates green; PR merged. |
+| 3 | Source-controlled Harbor publisher merged with tests **T1–T14 green** (B1 cleared), runbook written, fixture extended, and boundary runbook updated. |
+| 4 | New `buzz-native-bin` artifact published; digest and all **four** binary checksums recorded; pins promoted in Git and Vault (Buzz) plus Hermes GitOps sha256. |
 | 5 | devbuzz reports relay `0.2.1`; pair-relay reachable; NIP-AD functional; dev certified. |
 | 6 | buzz.bjzy.me reports relay `0.2.1`; readiness/metrics green; **no historical total decreased**; schedules 50/51 intact; silence removed. |
 | 7 | Hermes `buzz` CLI pin rolled; Buzz presence and delivery verified. |
-| 8 | `/Applications/Buzz.app` rebuilt on `desktop-v0.5.17` with private-CA trust; private WSS gate green; all §9.5 acceptance items pass; rollback bundle archived with a receipt. |
-| 9 | `buzz` CLI resolves and `buzz drafts` works. |
-| 10 | Mobile handled per the B2 decision, with the outcome recorded either way. |
-| 11 | Registry: D2 retired as a tombstone; D1/D3/D4/D5 `source_lock` refreshed; the seven §3.2 entries registered; validator and renderer `--check` pass; no fork-only commit is unaccounted for (B4 cleared). |
+| 8 | `/Applications/Buzz.app` rebuilt on `desktop-v0.5.17` with private-CA trust (D-1-B); private WSS gate green; all §9.5 acceptance items pass; rollback bundle archived with a receipt. |
+| 9 | `buzz` CLI symlink resolves; `buzz agents --help` exposes `draft-*` (NIP-AD). |
+| 10 | Mobile **not touched**; D4 and D7 remain `proposed`; Apple Developer follow-up recorded in Beads; closeout states the iPhone was intentionally left alone. |
+| 11 | Registry matches §3.3 exactly: D2 retired as a tombstone, D1 rescoped per D-1-B with CLI scope, D5 corrected to its full series, D6/D7/D8/D9 registered, all `source_lock` values refreshed, validator and renderer `--check` pass, and every one of the 74 commits is accounted for (B4 cleared). |
 | 12 | Notion pages updated; the new upgrade page exists; Upstream Watchlist current. |
 | 13 | Beads epic and children reflect reality; `tailscale-vault-of5-213.6` closed. |
 | 14 | Upstream PR hygiene done (#4256 closed; #4688/#4689 rebased). |
@@ -1010,8 +1518,12 @@ Never, under any circumstance in this plan:
 - Disable Gatekeeper globally.
 - Start a hosted macOS or Windows runner for any repository that is not verified
   public with parent `block/buzz`.
-- Install an iOS artifact before the B2 decision is recorded.
+- Build, sign, or install **any** iOS or Android artifact — mobile is deferred
+  (§4.2). A development-signed "quick test" install is not an exception.
+- Rebase D1 by cherry-picking `6d03a38` onto a tree that already has native-roots, or apply both private-CA implementations at once.
 - Hand-run an undocumented `oras push` to Harbor in place of the B1 publisher.
+- Write the publisher implementation before its test fails for the right reason,
+  or soften test T12 (secret-leak prevention) to get a green run.
 - Commit the human's unrelated Ruler-sync working-tree changes (§6.1).
 
 ---
@@ -1025,15 +1537,17 @@ Produce a single closeout with:
 3. Full `git cherry` census, before and after.
 4. Deviation reconciliation outcome per entry, with the verification command
    output that justifies it.
-5. Harbor tag, OCI digest, and the three binary SHA-256 values.
+5. Harbor tag, OCI digest, and the **four** binary SHA-256 values (`buzz-relay`, `buzz-admin`, `buzz-pair-relay`, `buzz`).
 6. Vault pin versions changed (field names and version numbers only — never
    values).
 7. Every AWX job ID with template, operation, SCM revision, and status.
 8. Before/after metric baselines for prod.
 9. Desktop DMG SHA-256, install receipt path, rollback directory, and the §9.5
    acceptance results.
-10. The B2 decision and what was done about mobile.
-11. All Git commits, PRs, merges, and promotions in both repos.
-12. Notion pages updated or created; Beads IDs created or closed.
-13. Every gate that failed and how it was resolved — or, if unresolved, the
+10. Confirmation D-1-B shipped (native-roots; `6d03a38` not applied).
+11. Confirmation that mobile was deferred and untouched, with the Apple
+    Developer follow-up Beads ID.
+12. All Git commits, PRs, merges, and promotions in both repos.
+13. Notion pages updated or created; Beads IDs created or closed.
+14. Every gate that failed and how it was resolved — or, if unresolved, the
      exact blocker, with no attempt to paper over it.
