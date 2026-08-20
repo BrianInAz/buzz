@@ -64,7 +64,7 @@ export function AgentManagementDialogs() {
           onSubmit={management.submitUpdate}
           open
           runtimes={management.runtimes}
-          runtimesLoading={management.runtimesLoading}
+          runtimeCatalogStatus={management.runtimeCatalogStatus}
           submitLabel="Save changes"
           title="Edit agent"
         />

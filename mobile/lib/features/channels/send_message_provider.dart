@@ -12,6 +12,7 @@ import '../profile/user_profile.dart';
 import 'channel.dart';
 import 'channel_messages_provider.dart';
 import 'channels_provider.dart';
+import 'message_mention_pubkeys.dart';
 
 /// Sends messages by signing an event with the user's nsec and publishing it
 /// over the relay's NIP-42-authenticated WebSocket session.
@@ -42,6 +43,7 @@ class SendMessage {
     required String? scope,
   })
   _promotePersistentAudience;
+  final bool Function()? _isDeliveryValid;
 
   SendMessage({
     required SignedEventRelay signedEventRelay,
@@ -72,6 +74,7 @@ class SendMessage {
       required String? scope,
     })
     promotePersistentAudience,
+    bool Function()? isDeliveryValid,
   }) : _signedEventRelay = signedEventRelay,
        _fetchMembers = fetchMembers,
        _readUserCache = readUserCache,
@@ -86,7 +89,8 @@ class SendMessage {
        _readPersistentAudienceRevision = readPersistentAudienceRevision,
        _resolveAudienceScope = resolveAudienceScope,
        _readPersistentAudience = readPersistentAudience,
-       _promotePersistentAudience = promotePersistentAudience;
+       _promotePersistentAudience = promotePersistentAudience,
+       _isDeliveryValid = isDeliveryValid;
 
   String? _buildAudienceScope({
     required String channelId,
@@ -115,13 +119,26 @@ class SendMessage {
     String? parentEventId,
     String? rootEventId,
     List<String>? mentionPubkeys,
+    Channel? channel,
     List<List<String>> mediaTags = const [],
   }) async {
+    _ensureDeliveryValid();
     // Use explicitly passed pubkeys, or resolve @mentions against
     // channel members to avoid matching the wrong user.
-    final resolvedMentions =
+    final explicitMentions =
         mentionPubkeys ?? await _resolveMentions(content, channelId);
     final authorPubkey = _signedEventRelay.pubkey;
+    final dmRecipientPubkeys = channel?.isDm == true
+        ? await _fetchDmRecipientPubkeys(channelId, channel!, authorPubkey)
+        : null;
+    final resolvedMentions = dmRecipientPubkeys != null
+        ? messageMentionPubkeys(
+            channel: channel!,
+            senderPubkey: authorPubkey,
+            explicitMentions: explicitMentions,
+            dmRecipientPubkeys: dmRecipientPubkeys,
+          )
+        : explicitMentions;
 
     // Normalize mentions: lowercase, deduplicate, exclude self (matching
     // the desktop's normalizeMentionPubkeys).
@@ -162,6 +179,7 @@ class SendMessage {
       ...mediaTags,
     ];
 
+    _ensureDeliveryValid();
     NostrEvent? localMessage;
     try {
       await _signedEventRelay.submit(
@@ -186,6 +204,44 @@ class SendMessage {
       final event = localMessage;
       if (event != null) _removeLocalMessage(channelId, event.id);
       rethrow;
+    }
+  }
+
+  /// Resolve every identity that is actually a current member of this DM.
+  ///
+  /// Membership is authoritative for delivery. The channel metadata's `p`
+  /// tags can lag membership changes, so they are only used when the membership
+  /// snapshot is unavailable.
+  Future<Set<String>> _fetchDmRecipientPubkeys(
+    String channelId,
+    Channel channel,
+    String? authorPubkey,
+  ) async {
+    List<ChannelMember>? members;
+    try {
+      members = await _fetchMembers(channelId);
+    } catch (_) {
+      // Fall back to metadata below so an unavailable membership query does
+      // not block ordinary DM sends.
+    }
+
+    final author = authorPubkey?.toLowerCase();
+    final participants = members != null && members.isNotEmpty
+        ? members.map((member) => member.pubkey)
+        : channel.participantPubkeys;
+    return {
+      for (final participant in participants)
+        if (participant.trim().isNotEmpty &&
+            participant.toLowerCase() != author)
+          participant.toLowerCase(),
+    };
+  }
+
+  void _ensureDeliveryValid() {
+    if (_isDeliveryValid?.call() == false) {
+      throw StateError(
+        'Message delivery cancelled because the active community changed',
+      );
     }
   }
 
@@ -377,6 +433,11 @@ final sendMessageProvider = Provider<SendMessage>((ref) {
     resolveAudienceScope: getPersistentAgentAudienceScope,
     readPersistentAudience: audience.getAudienceForScope,
     promotePersistentAudience: audience.promotePersistentAgentAudience,
+    isDeliveryValid: () {
+      final currentConfig = ref.read(relayConfigProvider);
+      return currentConfig.baseUrl == config.baseUrl &&
+          currentConfig.nsec == config.nsec;
+    },
   );
 });
 

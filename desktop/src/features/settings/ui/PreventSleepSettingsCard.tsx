@@ -7,7 +7,6 @@ import {
 } from "@/features/messages/lib/persistentAgentAudience";
 import { Switch } from "@/shared/ui/switch";
 import { SettingsOptionGroup, SettingsOptionRow } from "./SettingsOptionGroup";
-import { SettingsSectionHeader } from "./SettingsSectionHeader";
 
 const UNADDRESSED_MODE_OPTIONS: {
   value: UnaddressedChannelAgentMode;
@@ -25,13 +24,11 @@ export function PreventSleepSettingsCard() {
     useUnaddressedChannelAgentMode();
 
   return (
-    <section className="min-w-0" data-testid="settings-agents">
-      <SettingsSectionHeader
-        title="Agents"
-        description="Control how agents behave in conversations and run on this machine."
-      />
-
-      <SettingsOptionGroup>
+    <div className="min-w-0 space-y-3">
+      <SettingsOptionGroup
+        data-testid="agents-preferences-card"
+        title="Preferences"
+      >
         <SettingsOptionRow className="items-start">
           <div className="min-w-0 flex-1">
             <p
@@ -72,7 +69,6 @@ export function PreventSleepSettingsCard() {
             </div>
           </div>
         </SettingsOptionRow>
-
         <SettingsOptionRow>
           <div className="min-w-0">
             <label
@@ -81,7 +77,10 @@ export function PreventSleepSettingsCard() {
             >
               Keep addressed agents active
             </label>
-            <p className="text-sm font-normal text-muted-foreground">
+            <p
+              className="text-sm font-normal text-muted-foreground/70"
+              data-settings-subcopy
+            >
               Keep agents you address selected for future messages in the same
               channel or thread. Remove them from the composer at any time.
             </p>
@@ -102,7 +101,10 @@ export function PreventSleepSettingsCard() {
             >
               Keep awake while agents are active
             </label>
-            <p className="text-sm font-normal text-muted-foreground">
+            <p
+              className="text-sm font-normal text-muted-foreground/70"
+              data-settings-subcopy
+            >
               Prevents your computer from sleeping while local agents are
               running. Automatically releases when all agents stop or after 1
               hour without agent activity.
@@ -135,6 +137,6 @@ export function PreventSleepSettingsCard() {
           now.
         </p>
       )}
-    </section>
+    </div>
   );
 }
