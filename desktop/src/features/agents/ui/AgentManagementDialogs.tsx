@@ -2,7 +2,6 @@ import { useAgentManagement } from "@/features/agents/useAgentManagement";
 import { AgentCardDialogs } from "./AgentCardViewerDialog";
 import { AgentDialog } from "./AgentDialog";
 import { AgentDraftAdoptDialog } from "./AgentDraftAdoptDialog";
-import { SecretRevealDialog } from "./SecretRevealDialog";
 
 /** Global review surfaces opened by owned agents through the Buzz harness. */
 export function AgentManagementDialogs() {
@@ -37,18 +36,20 @@ export function AgentManagementDialogs() {
             if (!open) management.dismiss();
           }}
         />
-      ) : null}
-      {management.createdAgent ? (
-        <SecretRevealDialog
-          attachmentFailure={management.attachmentFailure}
-          created={management.createdAgent}
-          isRetryingAttachment={management.isRetryingAttachment}
+      ) : management.request?.action === "create" ? (
+        <AgentDialog
+          definitionError={
+            management.error ? new Error(management.error) : null
+          }
+          initialValues={management.createInitialValues}
+          isDefinitionPending={management.isPending}
+          mode="definition"
           onOpenChange={(open) => {
-            if (!open) management.dismissCreatedAgent();
+            if (!open) management.dismiss();
           }}
-          onRetryAttachment={() => {
-            void management.retryAttachment();
-          }}
+          onSubmitDefinition={management.submitCreate}
+          runtimes={management.runtimes}
+          runtimeCatalogStatus={management.runtimeCatalogStatus}
         />
       ) : null}
       {management.request?.action === "update" ? (

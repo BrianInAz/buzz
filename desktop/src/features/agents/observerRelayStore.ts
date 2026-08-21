@@ -10,6 +10,7 @@ import { decryptObserverEvent } from "@/shared/api/tauriObserver";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { useQueryClient } from "@tanstack/react-query";
 import { useIdentityQuery } from "@/shared/api/hooks";
+import { agentConfigSurfaceQueryKey } from "./hooks";
 import {
   parseAgentManagementRequest,
   type AgentManagementRequest,

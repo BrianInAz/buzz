@@ -33,6 +33,13 @@ export function RunOnSummarySection({
         >
           This computer
         </p>
+      ) : summary.location === "external" ? (
+        <p
+          className="text-sm text-muted-foreground"
+          data-testid="edit-agent-run-on-location"
+        >
+          External agent
+        </p>
       ) : (
         <div className="space-y-2 rounded-2xl border border-border bg-muted/30 px-4 py-3">
           <p
